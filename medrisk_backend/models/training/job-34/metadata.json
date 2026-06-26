@@ -1,0 +1,36 @@
+{
+  "version": "diabetes-xgboost-风险分类模型-1782455398",
+  "diseaseType": "diabetes",
+  "modelName": "XGBoost 风险分类模型",
+  "datasetPath": "D:\\CScode\\code\\aaa_production\\MedRisk\\medrisk_backend\\uploads\\datasets\\seed\\diabetes-demo.csv",
+  "metrics": {
+    "accuracy": 0.875,
+    "precision": 1.0,
+    "recall": 0.8,
+    "f1": 0.8889,
+    "auc": 1.0,
+    "confusionMatrix": [
+      [
+        3,
+        0
+      ],
+      [
+        1,
+        4
+      ]
+    ]
+  },
+  "features": [
+    "age",
+    "bmi",
+    "glucose",
+    "bloodPressure",
+    "cholesterol",
+    "smoker",
+    "symptomScore"
+  ],
+  "labelMap": {
+    "0": 0,
+    "1": 1
+  }
+}

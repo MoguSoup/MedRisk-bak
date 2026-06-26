@@ -1,0 +1,33 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:medrisk;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  flyway:
+    enabled: false
+  servlet:
+    multipart:
+      max-file-size: 256MB
+      max-request-size: 256MB
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+medrisk:
+  model-service-url: http://127.0.0.1:1
+  jwt-secret: test-secret-that-is-long-enough-for-hmac
+  report-dir: target/test-reports
+  upload-dir: target/test-uploads
+  training-output-dir: target/test-models
+  neo4j:
+    uri: bolt://127.0.0.1:1
+    username: neo4j
+    password: test
+    database: neo4j
+  llm:
+    base-url: http://127.0.0.1:1/v1
+    api-key:
+    model: qwen-plus
+    vision-model:

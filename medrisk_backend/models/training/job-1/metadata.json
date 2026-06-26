@@ -1,0 +1,71 @@
+{
+  "version": "diabetes-xgboost-风险分类模型-1782382583",
+  "diseaseType": "diabetes",
+  "modelName": "XGBoost 风险分类模型",
+  "datasetPath": "D:\\CScode\\code\\aaa_production\\MedRisk\\medrisk_backend\\uploads\\datasets\\1\\diabetes.csv",
+  "metrics": {
+    "accuracy": 0.8301,
+    "precision": 0.9091,
+    "recall": 0.0013,
+    "f1": 0.0026,
+    "auc": 0.7897,
+    "confusionMatrix": [
+      [
+        112835,
+        3
+      ],
+      [
+        23105,
+        30
+      ]
+    ]
+  },
+  "features": [
+    "age",
+    "ageGroup",
+    "sex",
+    "bmi",
+    "bmiCategory",
+    "heightInches",
+    "heightCm",
+    "weightKg",
+    "generalHealth",
+    "physicalHealthDays",
+    "mentalHealthDays",
+    "checkupTime",
+    "exercise",
+    "physicalActivity",
+    "smoked100",
+    "smokerCategory",
+    "currentSmoker",
+    "alcoholAny",
+    "heavyDrinking",
+    "averageDrinks",
+    "bingeDrinkDays",
+    "maxDrinks",
+    "hasPersonalDoctor",
+    "couldNotSeeDoctorCost",
+    "insuranceType",
+    "education",
+    "educationGroup",
+    "income",
+    "incomeGroup",
+    "race",
+    "deaf",
+    "blind",
+    "cognitiveDifficulty",
+    "difficultyWalking",
+    "difficultyDressing",
+    "difficultyErrands",
+    "highBloodPressure",
+    "highCholesterol",
+    "cholesterolCheck",
+    "heartDiseaseHistory",
+    "strokeHistory",
+    "kidneyDiseaseHistory"
+  ],
+  "labelMap": {
+    "0": 0,
+    "1": 1
+  }
+}

@@ -1,0 +1,112 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: medrisk-mysql
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-medrisk}
+      MYSQL_USER: ${MYSQL_USER:-medrisk_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ChangeMe_2026!}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ChangeRoot_2026!}
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - medrisk_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-ChangeRoot_2026!}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: medrisk-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-medrisk-neo4j}
+      TZ: Asia/Shanghai
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - medrisk_neo4j_data:/data
+      - medrisk_neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"${NEO4J_PASSWORD:-medrisk-neo4j}\" 'RETURN 1'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  model-service:
+    build:
+      context: ./medrisk_model_service
+    container_name: medrisk-model-service
+    ports:
+      - "8090:8090"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
+    volumes:
+      - ./uploads:/shared/uploads
+      - ./models:/shared/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./medrisk_backend
+    container_name: medrisk-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      model-service:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://mysql:3306/medrisk?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-medrisk_app}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-ChangeMe_2026!}
+      MEDRISK_MODEL_SERVICE_URL: ${MEDRISK_MODEL_SERVICE_URL:-http://model-service:8090}
+      MEDRISK_JWT_SECRET: ${MEDRISK_JWT_SECRET:-replace-with-at-least-32-characters}
+      MEDRISK_REPORT_DIR: ${MEDRISK_REPORT_DIR:-/app/reports}
+      MEDRISK_UPLOAD_DIR: ${MEDRISK_UPLOAD_DIR:-/shared/uploads}
+      MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
+      MEDRISK_NEO4J_URI: ${MEDRISK_NEO4J_URI:-bolt://neo4j:7687}
+      MEDRISK_NEO4J_USERNAME: ${MEDRISK_NEO4J_USERNAME:-neo4j}
+      MEDRISK_NEO4J_PASSWORD: ${MEDRISK_NEO4J_PASSWORD:-medrisk-neo4j}
+      MEDRISK_NEO4J_DATABASE: ${MEDRISK_NEO4J_DATABASE:-neo4j}
+      MEDRISK_LLM_BASE_URL: ${MEDRISK_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MEDRISK_LLM_API_KEY: ${MEDRISK_LLM_API_KEY:-}
+      MEDRISK_LLM_MODEL: ${MEDRISK_LLM_MODEL:-qwen-plus}
+      MEDRISK_VISION_MODEL: ${MEDRISK_VISION_MODEL:-}
+    volumes:
+      - medrisk_reports:/app/reports
+      - ./uploads:/shared/uploads
+      - ./models:/shared/models
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./medrisk_frontend
+    container_name: medrisk-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5241}:80"
+
+volumes:
+  medrisk_mysql:
+  medrisk_neo4j_data:
+  medrisk_neo4j_logs:
+  medrisk_reports:

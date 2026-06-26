@@ -1,0 +1,4 @@
+﻿patientNo,patientName,age,sex,bmi,systolicBloodPressure,diastolicBloodPressure,fastingGlucose,totalCholesterol,hdlCholesterol,smoker,alcoholUse,familyHistory,clinicalNote
+DEMO-LOW,低风险样例,29,女,21.4,112,72,4.9,4.3,1.55,False,False,False,规律体检，无明显不适。
+DEMO-MID,中风险样例,51,男,27.8,137,86,6.3,5.6,1.03,False,True,True,近期工作压力较大，偶有头晕乏力。
+DEMO-HIGH,高风险样例,68,男,31.2,166,98,8.8,6.8,0.78,True,False,True,近半年体重增加，偶有胸闷心悸，近期多饮多尿。
