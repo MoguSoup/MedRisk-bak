@@ -21,6 +21,8 @@ public class AuditLogEntity {
     @Column(nullable = false, length = 80)
     private String resourceType;
     private String resourceId;
+    @Column(length = 45)
+    private String clientIp;
     @Lob
     private String detailJson;
     @Column(nullable = false)
@@ -64,6 +66,14 @@ public class AuditLogEntity {
 
     public void setResourceId(String resourceId) {
         this.resourceId = resourceId;
+    }
+
+    public String getClientIp() {
+        return clientIp;
+    }
+
+    public void setClientIp(String clientIp) {
+        this.clientIp = clientIp;
     }
 
     public String getDetailJson() {

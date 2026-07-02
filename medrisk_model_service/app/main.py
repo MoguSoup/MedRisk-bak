@@ -5,13 +5,18 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .hf_qa import HuggingFaceQaGenerator
+from .model_adapters import capabilities
 from .model_registry import ModelRegistry
+from .public_evaluations import PUBLIC_EVALUATIONS
 from .schemas import (
     ActivateModelRequest,
     EvaluateRequest,
     EvaluationResponse,
     ModelInfo,
     PredictionResponse,
+    QaGenerateRequest,
+    QaGenerateResponse,
     TrainingHistoryResponse,
     TrainingStartRequest,
     TrainingStatusResponse,
@@ -22,6 +27,7 @@ from .training import TrainingManager
 app = FastAPI(title="MedRisk AI Model Service", version="1.0.0")
 registry = ModelRegistry()
 training_manager = TrainingManager()
+hf_qa = HuggingFaceQaGenerator()
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +51,29 @@ def active_models() -> list[ModelInfo]:
 @app.get("/models/metrics", response_model=list[ModelInfo])
 def model_metrics() -> list[ModelInfo]:
     return registry.info()
+
+
+@app.get("/models/capabilities")
+def model_capabilities() -> list[dict[str, Any]]:
+    return [capability.__dict__ for capability in capabilities()]
+
+
+@app.get("/models/public-evaluations")
+def public_evaluations() -> dict[str, dict[str, Any]]:
+    return PUBLIC_EVALUATIONS
+
+
+@app.get("/qa/capabilities")
+def qa_capabilities() -> dict[str, Any]:
+    return hf_qa.capability().__dict__
+
+
+@app.post("/qa/generate", response_model=QaGenerateResponse)
+def qa_generate(request: QaGenerateRequest) -> QaGenerateResponse:
+    try:
+        return hf_qa.generate(request)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/predict/{disease_type}", response_model=PredictionResponse)
@@ -102,5 +131,7 @@ def task_response(task: Any) -> TrainingStatusResponse:
         modelPath=task.model_path,
         historyPath=task.history_path,
         metadataPath=task.metadata_path,
+        modelType=task.model_type,
+        hyperparameters=task.hyperparameters,
         metrics=task.metrics,
     )

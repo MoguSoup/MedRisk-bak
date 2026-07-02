@@ -25,7 +25,21 @@
       </div>
       <el-table :data="documents" empty-text="暂无文档">
         <el-table-column prop="title" label="标题" min-width="220" />
-        <el-table-column prop="graphStatus" label="图谱状态" width="120" />
+        <el-table-column label="图谱状态" width="180">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.graphError"
+              effect="dark"
+              :content="row.graphError"
+              placement="top"
+            >
+              <el-tag type="danger">{{ row.graphStatus }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="row.graphStatus === '已构建' ? 'success' : row.graphStatus === '构建失败' ? 'danger' : 'info'">
+              {{ row.graphStatus }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="createdAt" label="上传时间" min-width="170" />
         <el-table-column label="操作" width="120">
           <template #default="{ row }">
@@ -59,7 +73,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { request } from '../api/client'
 
-type KnowledgeDocument = { id: number; title: string; graphStatus: string; createdAt: string }
+type KnowledgeDocument = { id: number; title: string; graphStatus: string; graphError?: string; createdAt: string }
 type GraphJob = { id: number; jobType: string; status: string; progress: number; nodesCreated: number; relationshipsCreated: number; message: string; createdAt: string }
 type GraphHealth = { connected?: boolean; status?: string; message?: string; database?: string }
 

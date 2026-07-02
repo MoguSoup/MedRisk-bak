@@ -1,0 +1,19 @@
+{
+  "name": "medrisk",
+  "version": "1.0.0",
+  "description": "MedRisk AI 是面向教学实训展示的智能医疗风险预测平台，支持中文界面、多病种风险预测、风险因素解释、预测历史、管理员模型训练管理和辅助报告生成。系统仅用于教学演示和健康风险提示，不能替代医生诊断。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@gitee.com:mogu-soup/MedRisk.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

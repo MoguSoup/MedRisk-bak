@@ -24,7 +24,7 @@ public class DoctorController {
     @GetMapping("/console/summary")
     ApiResponse<Map<String, Object>> summary(@RequestHeader(value = "Authorization", required = false) String authorization) {
         UserEntity user = authService.requireUser(authorization);
-        authService.requireAnyRole(user, "DOCTOR");
+        authService.requireAnyRole(user, "DOCTOR", "ADMIN");
         return ApiResponse.ok(adminService.doctorSummary());
     }
 }

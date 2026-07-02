@@ -32,6 +32,7 @@ class ModelInfo(BaseModel):
     disease_type: str
     disease_name: str
     model_name: str
+    model_type: str = "xgboost"
     version: str
     accuracy: float
     precision: float
@@ -39,16 +40,31 @@ class ModelInfo(BaseModel):
     f1: float
     auc: float
     active: bool = True
+    deployed: bool = True
+    evaluation_dataset: str | None = None
+    dataset_source: str | None = None
+    dataset_url: str | None = None
+    dataset_license: str | None = None
+    sample_count: int | None = None
+    validation_type: str | None = None
 
 
 class TrainingStartRequest(BaseModel):
     taskId: str
     datasetPath: str
+    evaluationDatasetPath: str | None = None
+    evaluationDatasetName: str | None = None
+    evaluationDatasetSource: str | None = None
+    evaluationDatasetUrl: str | None = None
+    evaluationDatasetLicense: str | None = None
+    evaluationSampleCount: int | None = None
     diseaseType: str
     modelName: str
+    modelType: str = "xgboost"
     epochs: int = Field(default=30, ge=1, le=500)
-    learningRate: float = Field(default=0.05, gt=0, le=1)
+    learningRate: float = Field(default=0.05, ge=0, le=1)
     testSize: float = Field(default=0.2, gt=0.05, lt=0.5)
+    hyperparameters: dict[str, Any] = Field(default_factory=dict)
     outputDir: str | None = None
 
 
@@ -62,6 +78,8 @@ class TrainingStatusResponse(BaseModel):
     modelPath: str | None = None
     historyPath: str | None = None
     metadataPath: str | None = None
+    modelType: str | None = None
+    hyperparameters: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
 
 
@@ -85,3 +103,17 @@ class ActivateModelRequest(BaseModel):
     diseaseType: str
     version: str
     modelPath: str
+
+
+class QaGenerateRequest(BaseModel):
+    question: str
+    context: str = ""
+    disclaimer: str = "本回答仅用于教学演示和健康知识参考，不能替代医生诊断。"
+    maxNewTokens: int | None = Field(default=None, ge=16, le=2048)
+
+
+class QaGenerateResponse(BaseModel):
+    answer: str
+    usedModel: str
+    provider: str = "huggingface-local"
+    fallbackUsed: bool = False

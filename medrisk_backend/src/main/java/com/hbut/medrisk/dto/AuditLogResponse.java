@@ -8,6 +8,7 @@ public record AuditLogResponse(
         String action,
         String resourceType,
         String resourceId,
+        String clientIp,
         String detailJson,
         LocalDateTime createdAt) {
 }

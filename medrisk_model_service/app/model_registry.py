@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import math
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from .public_evaluations import public_evaluation
 from .schemas import ModelInfo, PredictionResponse, RiskFactor
-from .training import encode_features, load_bundle
+from .training import encode_features, load_bundle, model_importances, model_probabilities
 
 
 DISCLAIMER = "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。"
@@ -63,25 +67,14 @@ class ModelRegistry:
     def __init__(self) -> None:
         self._models = _build_models()
         self._trained_models: dict[str, dict[str, Any]] = {}
+        self._active_models_file = active_models_file()
+        self._load_active_models()
 
     def diseases(self) -> list[str]:
         return sorted(self._models)
 
     def info(self) -> list[ModelInfo]:
-        return [
-            ModelInfo(
-                disease_type=model.disease_type,
-                disease_name=model.disease_name,
-                model_name="XGBoost 教学基线",
-                version=model.version,
-                accuracy=model.metrics["accuracy"],
-                precision=model.metrics["precision"],
-                recall=model.metrics["recall"],
-                f1=model.metrics["f1"],
-                auc=model.metrics["auc"],
-            )
-            for model in self._models.values()
-        ]
+        return [self._model_info(model) for model in self._models.values()]
 
     def predict(self, disease_type: str, payload: dict[str, Any]) -> PredictionResponse:
         if disease_type in self._trained_models:
@@ -137,22 +130,100 @@ class ModelRegistry:
         bundle = load_bundle(model_path)
         bundle["version"] = version
         self._trained_models[disease_type] = bundle
+        self._persist_active_model(disease_type, version, model_path)
+
+    def _model_info(self, model: DiseaseModel) -> ModelInfo:
+        if model.disease_type in self._trained_models:
+            bundle = self._trained_models[model.disease_type]
+            metadata = bundle.get("metadata") or {}
+            metrics = metadata.get("metrics") or {}
+            return ModelInfo(
+                disease_type=model.disease_type,
+                disease_name=model.disease_name,
+                model_name=str(metadata.get("modelName") or "管理员部署模型"),
+                model_type=str(metadata.get("modelType") or bundle.get("model_type") or "xgboost"),
+                version=str(bundle.get("version") or metadata.get("modelVersion") or "trained-model"),
+                accuracy=float(metrics.get("accuracy", 0)),
+                precision=float(metrics.get("precision", 0)),
+                recall=float(metrics.get("recall", 0)),
+                f1=float(metrics.get("f1", 0)),
+                auc=float(metrics.get("auc", 0)),
+                active=True,
+                deployed=True,
+                evaluation_dataset=str(metadata.get("evaluationDatasetName") or metrics.get("evaluationDataset") or metadata.get("datasetPath") or "管理员上传数据集"),
+                dataset_source=str(metadata.get("evaluationDatasetSource") or metrics.get("datasetSource") or "MedRisk admin dataset"),
+                dataset_url=metadata.get("evaluationDatasetUrl") or metrics.get("datasetUrl"),
+                dataset_license=metadata.get("evaluationDatasetLicense") or metrics.get("datasetLicense"),
+                sample_count=metadata.get("evaluationSampleCount") or metrics.get("sampleCount"),
+                validation_type="activated trained model",
+            )
+
+        evaluation = public_evaluation(model.disease_type)
+        return ModelInfo(
+            disease_type=model.disease_type,
+            disease_name=model.disease_name,
+            model_name="XGBoost 公开数据部署基线",
+            model_type="xgboost",
+            version=model.version,
+            accuracy=model.metrics["accuracy"],
+            precision=model.metrics["precision"],
+            recall=model.metrics["recall"],
+            f1=model.metrics["f1"],
+            auc=model.metrics["auc"],
+            active=True,
+            deployed=True,
+            evaluation_dataset=evaluation.get("evaluationDataset"),
+            dataset_source=evaluation.get("datasetSource"),
+            dataset_url=evaluation.get("datasetUrl"),
+            dataset_license=evaluation.get("datasetLicense"),
+            sample_count=evaluation.get("sampleCount"),
+            validation_type=evaluation.get("validationType"),
+        )
+
+    def _load_active_models(self) -> None:
+        if not self._active_models_file.exists():
+            return
+        try:
+            payload = json.loads(self._active_models_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for disease_type, item in payload.items():
+            model_path = str(item.get("modelPath") or "")
+            version = str(item.get("version") or "")
+            if not model_path or not version:
+                continue
+            try:
+                bundle = load_bundle(model_path)
+                bundle["version"] = version
+                self._trained_models[disease_type] = bundle
+            except Exception:
+                continue
+
+    def _persist_active_model(self, disease_type: str, version: str, model_path: str) -> None:
+        payload: dict[str, Any] = {}
+        if self._active_models_file.exists():
+            try:
+                payload = json.loads(self._active_models_file.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+        payload[disease_type] = {"version": version, "modelPath": str(Path(model_path).resolve())}
+        self._active_models_file.parent.mkdir(parents=True, exist_ok=True)
+        self._active_models_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _predict_trained(self, disease_type: str, payload: dict[str, Any]) -> PredictionResponse:
         bundle = self._trained_models[disease_type]
-        model = bundle["model"]
         raw_features = bundle.get("raw_features") or []
         row = {feature: payload.get(feature, 0) for feature in raw_features}
         frame = pd.DataFrame([row])
         encoded, _ = encode_features(frame, bundle["feature_columns"])
-        probability = float(model.predict_proba(encoded)[0][1])
+        probability = float(model_probabilities(bundle, encoded)[0][1])
         if probability >= 0.7:
             label = "high"
         elif probability >= 0.4:
             label = "medium"
         else:
             label = "low"
-        importances = getattr(model, "feature_importances_", [])
+        importances = model_importances(bundle, bundle["feature_columns"])
         factors: list[RiskFactor] = []
         for name, impact in zip(bundle["feature_columns"], importances):
             source = name.split("_", 1)[0]
@@ -264,3 +335,10 @@ def _build_models() -> dict[str, DiseaseModel]:
             {"accuracy": 0.89, "precision": 0.84, "recall": 0.9, "f1": 0.87, "auc": 0.94},
         ),
     }
+
+
+def active_models_file() -> Path:
+    configured = os.getenv("MEDRISK_ACTIVE_MODELS_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(os.getenv("MEDRISK_TRAINING_OUTPUT_DIR", "models/training")).expanduser().resolve() / "active-models.json"

@@ -41,24 +41,40 @@ public class MedRiskApplication {
 
             if (models.count() == 0) {
                 List<Object[]> defaults = List.of(
-                        new Object[] {"diabetes", "糖尿病", "XGBoost 教学基线", "diabetes-xgb-teaching-v1.0.0", 0.88, 0.84, 0.86, 0.85, 0.91},
-                        new Object[] {"heart", "心脏病", "XGBoost 教学基线", "heart-xgb-teaching-v1.0.0", 0.90, 0.86, 0.88, 0.87, 0.93},
-                        new Object[] {"kidney", "慢性肾病", "LightGBM 教学基线", "kidney-lightgbm-teaching-v1.0.0", 0.87, 0.83, 0.89, 0.86, 0.92},
-                        new Object[] {"liver", "肝病", "CatBoost 教学基线", "liver-catboost-teaching-v1.0.0", 0.86, 0.82, 0.85, 0.83, 0.90},
-                        new Object[] {"stroke", "中风", "RandomForest 教学基线", "stroke-rf-teaching-v1.0.0", 0.89, 0.84, 0.90, 0.87, 0.94});
+                        new Object[] {"diabetes", "糖尿病", "XGBoost 公开数据部署基线", "diabetes-xgb-teaching-v1.0.0", 0.88, 0.84, 0.86, 0.85, 0.91, "CDC BRFSS 2024 Diabetes", "CDC BRFSS 2024", "https://www.cdc.gov/brfss/annual_data/annual_2024.html", 453241},
+                        new Object[] {"heart", "心脏病", "XGBoost 公开数据部署基线", "heart-xgb-teaching-v1.0.0", 0.90, 0.86, 0.88, 0.87, 0.93, "CDC BRFSS 2024 Heart Disease", "CDC BRFSS 2024", "https://www.cdc.gov/brfss/annual_data/annual_2024.html", 452464},
+                        new Object[] {"kidney", "慢性肾病", "XGBoost 公开数据部署基线", "kidney-lightgbm-teaching-v1.0.0", 0.87, 0.83, 0.89, 0.86, 0.92, "CDC BRFSS 2024 Chronic Kidney Disease", "CDC BRFSS 2024", "https://www.cdc.gov/brfss/annual_data/annual_2024.html", 455691},
+                        new Object[] {"liver", "肝病", "XGBoost 公开数据部署基线", "liver-catboost-teaching-v1.0.0", 0.86, 0.82, 0.85, 0.83, 0.90, "CDC NHANES 2017-March 2020 Liver", "CDC NHANES 2017-March 2020", "https://wwwn.cdc.gov/nchs/nhanes/continuousnhanes/default.aspx?Cycle=2017-2020", 9213},
+                        new Object[] {"stroke", "中风", "XGBoost 公开数据部署基线", "stroke-rf-teaching-v1.0.0", 0.89, 0.84, 0.90, 0.87, 0.94, "CDC BRFSS 2024 Stroke", "CDC BRFSS 2024", "https://www.cdc.gov/brfss/annual_data/annual_2024.html", 456218});
                 for (Object[] row : defaults) {
                     ModelVersionEntity model = new ModelVersionEntity();
                     model.setDiseaseType((String) row[0]);
                     model.setDiseaseName((String) row[1]);
                     model.setModelName((String) row[2]);
                     model.setVersion((String) row[3]);
-                    model.setMetricsJson(objectMapper.writeValueAsString(Map.of(
-                            "accuracy", row[4],
-                            "precision", row[5],
-                            "recall", row[6],
-                            "f1", row[7],
-                            "auc", row[8])));
+                    model.setMetricsJson(objectMapper.writeValueAsString(Map.ofEntries(
+                            Map.entry("accuracy", row[4]),
+                            Map.entry("precision", row[5]),
+                            Map.entry("recall", row[6]),
+                            Map.entry("f1", row[7]),
+                            Map.entry("auc", row[8]),
+                            Map.entry("evaluationDataset", row[9]),
+                            Map.entry("datasetSource", row[10]),
+                            Map.entry("datasetUrl", row[11]),
+                            Map.entry("sampleCount", row[12]),
+                            Map.entry("validationType", "held-out public dataset evaluation"))));
                     model.setFeatureSchemaJson("[]");
+                    model.setHyperparametersJson(objectMapper.writeValueAsString(Map.of(
+                            "nEstimators", 80,
+                            "maxDepth", 3,
+                            "learningRate", 0.05,
+                            "subsample", 0.9,
+                            "colsampleBytree", 0.9,
+                            "regLambda", 1.0,
+                            "minChildWeight", 1.0)));
+                    model.setEvaluationDatasetName((String) row[9]);
+                    model.setEvaluationDatasetSource((String) row[10]);
+                    model.setEvaluationDatasetUrl((String) row[11]);
                     model.setModelPath("models/" + row[0] + "/" + row[3]);
                     model.setActive(true);
                     model.setCreatedAt(LocalDateTime.now());

@@ -132,6 +132,7 @@ public class KnowledgeDocumentService {
                 "content", row.getContent(),
                 "summary", row.getSummary(),
                 "graphStatus", row.getGraphStatus(),
+                "graphError", row.getGraphError(),
                 "visibility", row.getVisibility(),
                 "visibilityLabel", VisibilityPolicy.display(row.getVisibility()),
                 "sourceName", row.getSourceName(),

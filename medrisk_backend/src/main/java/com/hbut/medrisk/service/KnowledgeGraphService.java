@@ -161,6 +161,7 @@ public class KnowledgeGraphService {
                 job.setMessage("Neo4j 图谱清理失败：" + ex.getMessage());
                 rows.forEach(row -> {
                     row.setGraphStatus("构建失败");
+                    row.setGraphError(abbreviate("Neo4j 图谱清理失败：" + ex.getMessage(), 1000));
                     row.setUpdatedAt(LocalDateTime.now());
                 });
                 job.setUpdatedAt(LocalDateTime.now());
@@ -173,6 +174,7 @@ public class KnowledgeGraphService {
         for (int i = 0; i < rows.size(); i++) {
             KnowledgeDocumentEntity row = rows.get(i);
             try {
+                row.setGraphError(null);
                 List<KnowledgeGraphStore.Triplet> triplets = extractTriplets(row);
                 KnowledgeGraphStore.GraphWriteResult result = graphStore.mergeTriplets(
                         row.getId(),
@@ -186,11 +188,14 @@ public class KnowledgeGraphService {
                 relationships += result.relationshipsCreated();
                 completed++;
                 row.setGraphStatus("已构建");
+                row.setGraphError(null);
                 row.setUpdatedAt(LocalDateTime.now());
             } catch (Exception ex) {
+                String reason = graphFailureReason(ex);
                 failed++;
-                failures.add(row.getTitle() + "：" + ex.getMessage());
+                failures.add(row.getTitle() + "：" + reason);
                 row.setGraphStatus("构建失败");
+                row.setGraphError(abbreviate(reason, 1000));
                 row.setUpdatedAt(LocalDateTime.now());
             }
             job.setProgress(Math.round(((i + 1) * 100f) / total));
@@ -220,6 +225,23 @@ public class KnowledgeGraphService {
         job.setUpdatedAt(LocalDateTime.now());
         jobs.save(job);
         return toMap(job);
+    }
+
+    private String graphFailureReason(Exception ex) {
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) {
+            message = ex.getClass().getSimpleName();
+        }
+        if (message.contains("temporarily unavailable") || message.contains("Unable to connect") || message.contains("Connection")) {
+            return "Neo4j 连接不可用：" + message;
+        }
+        if (message.contains("Invalid input") || message.contains("SyntaxException")) {
+            return "Neo4j 写入语句失败，可能存在非法图谱标签或关系：" + message;
+        }
+        if (message.contains("数据集") || message.contains("文档")) {
+            return message;
+        }
+        return "图谱写入失败：" + message;
     }
 
     List<KnowledgeGraphStore.Triplet> extractTriplets(KnowledgeDocumentEntity document) {

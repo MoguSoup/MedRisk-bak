@@ -1,50 +1,45 @@
 <template>
-  <div ref="chartRef" class="factor-chart" aria-label="主要风险因素图表"></div>
+  <div class="sci-factor-chart" aria-label="Risk factor chart">
+    <div class="sci-factor-axis">
+      <span>0</span>
+      <span>25%</span>
+      <span>50%</span>
+      <span>75%</span>
+      <span>100%</span>
+    </div>
+    <div class="sci-factor-plot">
+      <div
+        v-for="(item, index) in normalizedFactors"
+        :key="item.label"
+        class="sci-factor-row"
+        :style="{ '--factor-color': palette[index % palette.length] }"
+      >
+        <span class="sci-factor-label">{{ item.label }}</span>
+        <div class="sci-factor-track">
+          <i :style="{ width: `${item.percent}%` }"></i>
+        </div>
+        <strong>{{ item.percent }}%</strong>
+      </div>
+    </div>
+    <div class="sci-factor-note">Top contributing variables ranked by normalized model attribution.</div>
+  </div>
 </template>
 
 <script setup lang="ts">
-import * as echarts from 'echarts'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 
 const props = defineProps<{
   factors: Array<{ label: string; impact: number }>
 }>()
 
-const chartRef = ref<HTMLDivElement>()
-let chart: echarts.ECharts | undefined
+const palette = ['#2563eb', '#0f766e', '#7c3aed', '#dc2626', '#d97706', '#0891b2']
 
-function renderChart() {
-  if (!chartRef.value) return
-  chart ||= echarts.init(chartRef.value)
-  chart.setOption({
-    grid: { left: 120, right: 18, top: 16, bottom: 24 },
-    xAxis: { type: 'value', max: 1, axisLabel: { color: '#64748b' } },
-    yAxis: {
-      type: 'category',
-      data: props.factors.map((item) => item.label),
-      axisLabel: { color: '#334155', width: 108, overflow: 'truncate' }
-    },
-    series: [
-      {
-        type: 'bar',
-        data: props.factors.map((item) => item.impact),
-        barWidth: 14,
-        itemStyle: { color: '#14b8a6', borderRadius: [0, 4, 4, 0] }
-      }
-    ],
-    tooltip: { trigger: 'axis' }
-  })
-}
-
-onMounted(() => {
-  renderChart()
-  window.addEventListener('resize', renderChart)
-})
-
-watch(() => props.factors, renderChart, { deep: true })
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', renderChart)
-  chart?.dispose()
+const normalizedFactors = computed(() => {
+  const rows = props.factors || []
+  const max = Math.max(...rows.map((item) => Number(item.impact) || 0), 1)
+  return rows.slice(0, 8).map((item) => ({
+    label: item.label,
+    percent: Math.max(1, Math.round(((Number(item.impact) || 0) / max) * 100))
+  }))
 })
 </script>

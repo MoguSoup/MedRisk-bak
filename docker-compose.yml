@@ -26,8 +26,8 @@ services:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-medrisk-neo4j}
       TZ: Asia/Shanghai
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     volumes:
       - medrisk_neo4j_data:/data
       - medrisk_neo4j_logs:/logs
@@ -46,9 +46,15 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
+      MEDRISK_ACTIVE_MODELS_FILE: ${MEDRISK_ACTIVE_MODELS_FILE:-/shared/models/training/active-models.json}
+      MEDRISK_HF_QA_MODEL: ${MEDRISK_HF_QA_MODEL:-}
+      MEDRISK_HF_QA_DEVICE: ${MEDRISK_HF_QA_DEVICE:-auto}
+      MEDRISK_HF_QA_MAX_NEW_TOKENS: ${MEDRISK_HF_QA_MAX_NEW_TOKENS:-512}
+      MEDRISK_HF_QA_TRUST_REMOTE_CODE: ${MEDRISK_HF_QA_TRUST_REMOTE_CODE:-false}
     volumes:
       - ./uploads:/shared/uploads
       - ./models:/shared/models
+      - ./data:/shared/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health').read()"]
       interval: 10s
@@ -77,6 +83,7 @@ services:
       MEDRISK_REPORT_DIR: ${MEDRISK_REPORT_DIR:-/app/reports}
       MEDRISK_UPLOAD_DIR: ${MEDRISK_UPLOAD_DIR:-/shared/uploads}
       MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
+      MEDRISK_PUBLIC_DATASET_DIR: ${MEDRISK_PUBLIC_DATASET_DIR:-/shared/data/processed}
       MEDRISK_NEO4J_URI: ${MEDRISK_NEO4J_URI:-bolt://neo4j:7687}
       MEDRISK_NEO4J_USERNAME: ${MEDRISK_NEO4J_USERNAME:-neo4j}
       MEDRISK_NEO4J_PASSWORD: ${MEDRISK_NEO4J_PASSWORD:-medrisk-neo4j}
@@ -84,11 +91,29 @@ services:
       MEDRISK_LLM_BASE_URL: ${MEDRISK_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       MEDRISK_LLM_API_KEY: ${MEDRISK_LLM_API_KEY:-}
       MEDRISK_LLM_MODEL: ${MEDRISK_LLM_MODEL:-qwen-plus}
-      MEDRISK_VISION_MODEL: ${MEDRISK_VISION_MODEL:-}
+      MEDRISK_VISION_MODEL: ${MEDRISK_VISION_MODEL:-qwen3.5-omni-plus-2026-03-15}
+      MEDRISK_IMAGE_MODEL: ${MEDRISK_IMAGE_MODEL:-wanx-v1}
+      MEDRISK_HTTP_CONNECT_TIMEOUT_MS: ${MEDRISK_HTTP_CONNECT_TIMEOUT_MS:-5000}
+      MEDRISK_HTTP_READ_TIMEOUT_MS: ${MEDRISK_HTTP_READ_TIMEOUT_MS:-20000}
+      MEDRISK_HF_LLM_ENABLED: ${MEDRISK_HF_LLM_ENABLED:-false}
+      MEDRISK_MAIL_HOST: ${MEDRISK_MAIL_HOST:-smtp.163.com}
+      MEDRISK_MAIL_PORT: ${MEDRISK_MAIL_PORT:-465}
+      MEDRISK_MAIL_USERNAME: ${MEDRISK_MAIL_USERNAME:-}
+      MEDRISK_MAIL_PASSWORD: ${MEDRISK_MAIL_PASSWORD:-}
+      MEDRISK_MAIL_FROM: ${MEDRISK_MAIL_FROM:-}
+      MEDRISK_MAIL_SSL: ${MEDRISK_MAIL_SSL:-true}
+      MEDRISK_MAIL_STARTTLS: ${MEDRISK_MAIL_STARTTLS:-false}
+      MEDRISK_MAIL_AUTH: ${MEDRISK_MAIL_AUTH:-true}
+      MEDRISK_MAIL_AUTH_MECHANISMS: ${MEDRISK_MAIL_AUTH_MECHANISMS:-LOGIN}
+      MEDRISK_MAIL_SSL_TRUST: ${MEDRISK_MAIL_SSL_TRUST:-smtp.163.com}
+      MEDRISK_MAIL_CONNECTION_TIMEOUT_MS: ${MEDRISK_MAIL_CONNECTION_TIMEOUT_MS:-10000}
+      MEDRISK_MAIL_READ_TIMEOUT_MS: ${MEDRISK_MAIL_READ_TIMEOUT_MS:-10000}
+      MEDRISK_MAIL_WRITE_TIMEOUT_MS: ${MEDRISK_MAIL_WRITE_TIMEOUT_MS:-10000}
     volumes:
       - medrisk_reports:/app/reports
       - ./uploads:/shared/uploads
       - ./models:/shared/models
+      - ./data:/shared/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
       interval: 10s

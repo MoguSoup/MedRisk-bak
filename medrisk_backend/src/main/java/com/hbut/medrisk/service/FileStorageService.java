@@ -57,6 +57,30 @@ public class FileStorageService {
                 "/api/files/" + bucket + "/" + objectKey.replace('\\', '/'));
     }
 
+    public StoredFile storeBytes(String bucket, String originalFilename, String providedContentType, byte[] bytes) throws IOException {
+        validateBucket(bucket);
+        if (bytes == null || bytes.length == 0) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+        String original = StringUtils.cleanPath(originalFilename == null || originalFilename.isBlank() ? "upload.bin" : originalFilename);
+        String extension = extension(original);
+        String day = LocalDate.now().toString().replace("-", "");
+        String objectKey = day + "/" + UUID.randomUUID() + extension;
+        Path dir = uploadRoot.resolve(bucket).resolve(day).normalize();
+        ensureInside(uploadRoot, dir);
+        Files.createDirectories(dir);
+        Path target = uploadRoot.resolve(bucket).resolve(objectKey).normalize();
+        ensureInside(uploadRoot, target);
+        Files.write(target, bytes);
+        return new StoredFile(
+                bucket,
+                objectKey.replace('\\', '/'),
+                original,
+                bytes.length,
+                contentType(providedContentType, original),
+                "/api/files/" + bucket + "/" + objectKey.replace('\\', '/'));
+    }
+
     public StoredFile storeGeneratedText(String bucket, String objectKey, String originalFilename, String content) throws IOException {
         validateBucket(bucket);
         if (objectKey == null || objectKey.isBlank() || objectKey.contains("..")) {

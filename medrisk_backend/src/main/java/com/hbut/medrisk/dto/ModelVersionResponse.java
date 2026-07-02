@@ -8,8 +8,13 @@ public record ModelVersionResponse(
         String diseaseType,
         String diseaseName,
         String modelName,
+        String modelType,
         String version,
         Map<String, Object> metrics,
+        Map<String, Object> hyperparameters,
+        String evaluationDatasetName,
+        String evaluationDatasetSource,
+        String evaluationDatasetUrl,
         boolean active,
         LocalDateTime createdAt) {
 }

@@ -59,6 +59,13 @@ public class AdminTrainingController {
         return ApiResponse.ok(trainingService.uploadDataset(name, diseaseType, description, file, user));
     }
 
+    @PostMapping("/datasets/import-public")
+    ApiResponse<List<TrainingDatasetResponse>> importPublicDatasets(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        UserEntity user = requireAdmin(authorization);
+        return ApiResponse.ok(trainingService.importPublicDatasets(user));
+    }
+
     @PutMapping("/datasets/{id}")
     ApiResponse<TrainingDatasetResponse> updateDataset(
             @RequestHeader(value = "Authorization", required = false) String authorization,
@@ -90,6 +97,13 @@ public class AdminTrainingController {
             @RequestHeader(value = "Authorization", required = false) String authorization) {
         requireAdmin(authorization);
         return ApiResponse.ok(trainingService.listJobs());
+    }
+
+    @GetMapping("/model-capabilities")
+    ApiResponse<List<Map<String, Object>>> modelCapabilities(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        requireAdmin(authorization);
+        return ApiResponse.ok(trainingService.modelCapabilities());
     }
 
     @PostMapping("/training-jobs")

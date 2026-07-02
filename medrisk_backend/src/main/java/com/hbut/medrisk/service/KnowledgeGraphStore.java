@@ -190,28 +190,30 @@ public class KnowledgeGraphStore {
                             "sourceLicense", sourceLicense,
                             "visibility", visibility,
                             "label", triplet.relationLabel()));
-                    tx.run("""
-                            MATCH (d:Document {graphKey: $documentKey})
-                            MATCH (h:%s {graphKey: $headKey})
-                            MERGE (h)-[r:RECORDED_IN]->(d)
-                            SET r.medriskSource = $source,
-                                r.documentId = $documentId,
-                                r.label = '记录于',
-                                r.sourceName = $sourceName,
-                                r.sourceUrl = $sourceUrl,
-                                r.sourceLicense = $sourceLicense,
-                                r.visibility = $visibility
-                            """.formatted(headType), params(
-                            "documentKey", documentKey,
-                            "headKey", headKey,
-                            "source", SOURCE,
-                            "documentId", documentId,
-                            "sourceName", sourceName,
-                            "sourceUrl", sourceUrl,
-                            "sourceLicense", sourceLicense,
-                            "visibility", visibility));
+                    if (!headKey.equals(documentKey)) {
+                        tx.run("""
+                                MATCH (d:Document {graphKey: $documentKey})
+                                MATCH (h:%s {graphKey: $headKey})
+                                MERGE (h)-[r:RECORDED_IN]->(d)
+                                SET r.medriskSource = $source,
+                                    r.documentId = $documentId,
+                                    r.label = '记录于',
+                                    r.sourceName = $sourceName,
+                                    r.sourceUrl = $sourceUrl,
+                                    r.sourceLicense = $sourceLicense,
+                                    r.visibility = $visibility
+                                """.formatted(headType), params(
+                                "documentKey", documentKey,
+                                "headKey", headKey,
+                                "source", SOURCE,
+                                "documentId", documentId,
+                                "sourceName", sourceName,
+                                "sourceUrl", sourceUrl,
+                                "sourceLicense", sourceLicense,
+                                "visibility", visibility));
+                    }
                     nodes += 2;
-                    relationships += 2;
+                    relationships += headKey.equals(documentKey) ? 1 : 2;
                 }
                 return new GraphWriteResult(nodes, relationships);
             });

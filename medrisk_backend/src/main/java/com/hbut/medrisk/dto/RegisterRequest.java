@@ -9,5 +9,6 @@ public record RegisterRequest(
         @Email @NotBlank String email,
         @Size(min = 6) String password,
         @NotBlank String name,
-        String role) {
+        String role,
+        @NotBlank String emailCode) {
 }

@@ -2,6 +2,7 @@ package com.hbut.medrisk.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -26,10 +27,12 @@ public class WebConfig implements WebMvcConfigurer {
     }
 
     @Bean
-    RestTemplate restTemplate() {
+    RestTemplate restTemplate(
+            @Value("${medrisk.http.connect-timeout-ms:5000}") int connectTimeoutMs,
+            @Value("${medrisk.http.read-timeout-ms:20000}") int readTimeoutMs) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(2000);
-        factory.setReadTimeout(5000);
+        factory.setConnectTimeout(connectTimeoutMs);
+        factory.setReadTimeout(readTimeoutMs);
         return new RestTemplate(factory);
     }
 }

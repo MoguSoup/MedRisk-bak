@@ -17,12 +17,15 @@ public class ModelTrainingJobEntity {
     private Long id;
     @Column(nullable = false)
     private Long datasetId;
+    private Long evaluationDatasetId;
     @Column(nullable = false)
     private Long userId;
     @Column(nullable = false, length = 40)
     private String diseaseType;
     @Column(nullable = false, length = 120)
     private String modelName;
+    @Column(nullable = false, length = 30)
+    private String modelType = "xgboost";
     @Column(nullable = false, length = 40)
     private String trainStatus;
     @Column(nullable = false)
@@ -34,6 +37,8 @@ public class ModelTrainingJobEntity {
     private Double learningRate;
     @Column(nullable = false)
     private Double testSize;
+    @Lob
+    private String hyperparametersJson;
     private String modelVersion;
     @Column(length = 500)
     private String modelPath;
@@ -54,12 +59,16 @@ public class ModelTrainingJobEntity {
     public void setId(Long id) { this.id = id; }
     public Long getDatasetId() { return datasetId; }
     public void setDatasetId(Long datasetId) { this.datasetId = datasetId; }
+    public Long getEvaluationDatasetId() { return evaluationDatasetId; }
+    public void setEvaluationDatasetId(Long evaluationDatasetId) { this.evaluationDatasetId = evaluationDatasetId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
     public String getDiseaseType() { return diseaseType; }
     public void setDiseaseType(String diseaseType) { this.diseaseType = diseaseType; }
     public String getModelName() { return modelName; }
     public void setModelName(String modelName) { this.modelName = modelName; }
+    public String getModelType() { return modelType; }
+    public void setModelType(String modelType) { this.modelType = modelType; }
     public String getTrainStatus() { return trainStatus; }
     public void setTrainStatus(String trainStatus) { this.trainStatus = trainStatus; }
     public Integer getProgress() { return progress; }
@@ -72,6 +81,8 @@ public class ModelTrainingJobEntity {
     public void setLearningRate(Double learningRate) { this.learningRate = learningRate; }
     public Double getTestSize() { return testSize; }
     public void setTestSize(Double testSize) { this.testSize = testSize; }
+    public String getHyperparametersJson() { return hyperparametersJson; }
+    public void setHyperparametersJson(String hyperparametersJson) { this.hyperparametersJson = hyperparametersJson; }
     public String getModelVersion() { return modelVersion; }
     public void setModelVersion(String modelVersion) { this.modelVersion = modelVersion; }
     public String getModelPath() { return modelPath; }

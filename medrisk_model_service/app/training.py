@@ -10,11 +10,27 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier
 from xgboost.callback import TrainingCallback
+
+from .model_adapters import create_adapter, normalize_model_type
 
 
 STATUS_PREPARE = "准备训练"
@@ -35,6 +51,8 @@ class TrainingTask:
     model_path: str | None = None
     history_path: str | None = None
     metadata_path: str | None = None
+    model_type: str | None = None
+    hyperparameters: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
     history: dict[str, list[float]] = field(default_factory=dict)
     stop_requested: bool = False
@@ -67,7 +85,14 @@ class TrainingManager:
 
     def start(self, request: Any) -> TrainingTask:
         with self._lock:
-            task = TrainingTask(task_id=str(request.taskId), message=str(request.epochs))
+            model_type = normalize_model_type(getattr(request, "modelType", None))
+            hyperparameters = normalize_hyperparameters(model_type, getattr(request, "hyperparameters", {}) or {}, request)
+            task = TrainingTask(
+                task_id=str(request.taskId),
+                message=str(hyperparameters.get("nEstimators", request.epochs)),
+                model_type=model_type,
+                hyperparameters=hyperparameters,
+            )
             self._tasks[task.task_id] = task
         thread = threading.Thread(target=self._run_training, args=(task, request), daemon=True)
         thread.start()
@@ -108,10 +133,16 @@ class TrainingManager:
             if y.nunique() != 2:
                 raise ValueError("label 列必须是二分类标签")
             stratify = y if y.value_counts().min() >= 2 else None
+            model_type = normalize_model_type(getattr(request, "modelType", None))
+            hyperparameters = normalize_hyperparameters(model_type, getattr(request, "hyperparameters", {}) or {}, request)
+            request.hyperparameters = hyperparameters
+            task.model_type = model_type
+            task.hyperparameters = hyperparameters
+            test_size = float(hyperparameters.get("testSize", request.testSize))
             X_train, X_test, y_train, y_test = train_test_split(
                 X,
                 y,
-                test_size=request.testSize,
+                test_size=test_size,
                 random_state=42,
                 stratify=stratify,
             )
@@ -120,34 +151,25 @@ class TrainingManager:
             label_map = {label: index for index, label in enumerate(sorted(y.unique(), key=str))}
             y_train_encoded = y_train.map(label_map).astype(int)
             y_test_encoded = y_test.map(label_map).astype(int)
-            model = XGBClassifier(
-                n_estimators=request.epochs,
-                learning_rate=request.learningRate,
-                max_depth=3,
-                subsample=0.9,
-                colsample_bytree=0.9,
-                objective="binary:logistic",
-                eval_metric=["logloss", "error"],
-                random_state=42,
-                n_jobs=1,
-                callbacks=[StopCallback(task)],
-            )
-            model.fit(
-                train_matrix,
-                y_train_encoded,
-                eval_set=[(train_matrix, y_train_encoded), (test_matrix, y_test_encoded)],
-                verbose=False,
-            )
-            history = normalize_history(model.evals_result())
+            adapter = create_adapter(model_type)
+            history = adapter.fit(train_matrix, y_train_encoded, test_matrix, y_test_encoded, request, task, StopCallback)
             bundle = {
-                "model": model,
+                "adapter": adapter,
+                "model_type": model_type,
                 "feature_columns": feature_columns,
                 "raw_features": list(X.columns),
                 "label_map": label_map,
                 "disease_type": request.diseaseType,
+                "hyperparameters": hyperparameters,
             }
-            metrics, predictions = evaluate_bundle(bundle, X_test, y_test)
-            version = f"{request.diseaseType}-{slugify(request.modelName)}-{int(time.time())}"
+            if getattr(request, "evaluationDatasetPath", None):
+                eval_df = read_dataset(Path(request.evaluationDatasetPath))
+                X_eval, y_eval = split_features_label(eval_df)
+                metrics, predictions = evaluate_bundle(bundle, X_eval, y_eval)
+                metrics.update(evaluation_metadata(request, len(eval_df)))
+            else:
+                metrics, predictions = evaluate_bundle(bundle, X_test, y_test)
+            version = f"{request.diseaseType}-{model_type}-{slugify(request.modelName)}-{int(time.time())}"
             output_dir = Path(request.outputDir) if request.outputDir else default_output_root() / version
             output_dir.mkdir(parents=True, exist_ok=True)
             model_path = output_dir / "model.joblib"
@@ -159,7 +181,15 @@ class TrainingManager:
                 "version": version,
                 "diseaseType": request.diseaseType,
                 "modelName": request.modelName,
+                "modelType": model_type,
+                "hyperparameters": hyperparameters,
                 "datasetPath": str(dataset_path),
+                "evaluationDatasetPath": getattr(request, "evaluationDatasetPath", None),
+                "evaluationDatasetName": getattr(request, "evaluationDatasetName", None),
+                "evaluationDatasetSource": getattr(request, "evaluationDatasetSource", None),
+                "evaluationDatasetUrl": getattr(request, "evaluationDatasetUrl", None),
+                "evaluationDatasetLicense": getattr(request, "evaluationDatasetLicense", None),
+                "evaluationSampleCount": getattr(request, "evaluationSampleCount", None),
                 "metrics": metrics,
                 "features": list(X.columns),
                 "labelMap": {str(key): value for key, value in label_map.items()},
@@ -168,6 +198,8 @@ class TrainingManager:
             task.progress = 100
             task.current_loss = last_loss(history)
             task.model_version = version
+            task.model_type = model_type
+            task.hyperparameters = hyperparameters
             task.model_path = str(model_path)
             task.history_path = str(history_path)
             task.metadata_path = str(metadata_path)
@@ -188,6 +220,103 @@ class TrainingManager:
 
 def default_output_root() -> Path:
     return Path(os.getenv("MEDRISK_TRAINING_OUTPUT_DIR", "models/training")).resolve()
+
+
+def normalize_hyperparameters(model_type: str, payload: dict[str, Any], request: Any) -> dict[str, Any]:
+    if model_type == "logistic_regression":
+        return {
+            "cValue": float_value(payload.get("cValue"), 1.0),
+            "maxIterations": int_value(payload.get("maxIterations"), 300),
+            "classWeight": str(payload.get("classWeight") or "balanced"),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type in {"random_forest", "extra_trees"}:
+        return {
+            "nEstimators": int_value(payload.get("nEstimators"), getattr(request, "epochs", 160)),
+            "maxDepth": int_value(payload.get("maxDepth"), 6),
+            "classWeight": str(payload.get("classWeight") or "balanced"),
+            "seed": int_value(payload.get("seed"), 42),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type == "hist_gradient_boosting":
+        return {
+            "maxIterations": int_value(payload.get("maxIterations", payload.get("nEstimators")), getattr(request, "epochs", 120)),
+            "maxDepth": int_value(payload.get("maxDepth"), 4),
+            "learningRate": float_value(payload.get("learningRate"), getattr(request, "learningRate", 0.05)),
+            "regLambda": float_value(payload.get("regLambda"), 0.0),
+            "seed": int_value(payload.get("seed"), 42),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type in {"lightgbm", "catboost"}:
+        return {
+            "nEstimators": int_value(payload.get("nEstimators"), getattr(request, "epochs", 160)),
+            "maxDepth": int_value(payload.get("maxDepth"), 6),
+            "learningRate": float_value(payload.get("learningRate"), getattr(request, "learningRate", 0.05)),
+            "subsample": float_value(payload.get("subsample"), 0.9),
+            "colsampleBytree": float_value(payload.get("colsampleBytree"), 0.9),
+            "regLambda": float_value(payload.get("regLambda"), 1.0),
+            "seed": int_value(payload.get("seed"), 42),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type == "tabpfn":
+        return {
+            "maxTrainSamples": int_value(payload.get("maxTrainSamples"), 10000),
+            "device": str(payload.get("device") or "auto"),
+            "ensembleSize": int_value(payload.get("ensembleSize"), 8),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type == "tabicl":
+        return {
+            "contextSize": int_value(payload.get("contextSize"), 2048),
+            "maxTrainSamples": int_value(payload.get("maxTrainSamples"), 10000),
+            "device": str(payload.get("device") or "auto"),
+            "seed": int_value(payload.get("seed"), 42),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    if model_type == "ft_transformer":
+        return {
+            "maxTrainSamples": int_value(payload.get("maxTrainSamples"), 10000),
+            "contextSize": int_value(payload.get("contextSize"), 2048),
+            "learningRate": float_value(payload.get("learningRate"), getattr(request, "learningRate", 0.001)),
+            "device": str(payload.get("device") or "auto"),
+            "seed": int_value(payload.get("seed"), 42),
+            "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+        }
+    return {
+        "nEstimators": int_value(payload.get("nEstimators"), getattr(request, "epochs", 80)),
+        "maxDepth": int_value(payload.get("maxDepth"), 3),
+        "learningRate": float_value(payload.get("learningRate"), getattr(request, "learningRate", 0.05)),
+        "subsample": float_value(payload.get("subsample"), 0.9),
+        "colsampleBytree": float_value(payload.get("colsampleBytree"), 0.9),
+        "regLambda": float_value(payload.get("regLambda"), 1.0),
+        "minChildWeight": float_value(payload.get("minChildWeight"), 1.0),
+        "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
+    }
+
+
+def int_value(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(fallback)
+
+
+def float_value(value: Any, fallback: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(fallback)
+
+
+def evaluation_metadata(request: Any, sample_count: int) -> dict[str, Any]:
+    return {
+        "evaluationDataset": getattr(request, "evaluationDatasetName", None) or Path(getattr(request, "evaluationDatasetPath", "")).name,
+        "datasetSource": getattr(request, "evaluationDatasetSource", None) or "MedRisk evaluation dataset",
+        "datasetUrl": getattr(request, "evaluationDatasetUrl", None),
+        "datasetLicense": getattr(request, "evaluationDatasetLicense", None),
+        "sampleCount": getattr(request, "evaluationSampleCount", None) or sample_count,
+        "validationType": "external evaluation dataset",
+    }
 
 
 def read_dataset(path: Path) -> pd.DataFrame:
@@ -248,17 +377,49 @@ def normalize_history(raw: dict[str, dict[str, list[float]]]) -> dict[str, list[
 def evaluate_bundle(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     encoded, _ = encode_features(X, bundle["feature_columns"])
     label_map = bundle["label_map"]
-    y_encoded = y.map(label_map).astype(int)
-    model = bundle["model"]
-    probabilities = model.predict_proba(encoded)[:, 1]
+    y_encoded = y.map(label_map)
+    if y_encoded.isna().any():
+        raise ValueError("评估数据集包含训练集中未出现的 label 值")
+    y_encoded = y_encoded.astype(int)
+    adapter = bundle.get("adapter")
+    if adapter is not None:
+        probabilities = adapter.predict_proba(encoded)[:, 1]
+    else:
+        model = bundle["model"]
+        probabilities = model.predict_proba(encoded)[:, 1]
+    probabilities = np.asarray(probabilities, dtype=float)
     predicted = (probabilities >= 0.5).astype(int)
+    matrix = confusion_matrix(y_encoded, predicted, labels=[0, 1])
+    tn, fp, fn, tp = matrix.ravel()
+    specificity = tn / (tn + fp) if (tn + fp) else 0.0
+    has_both_classes = len(set(y_encoded)) > 1
+    if has_both_classes:
+        fpr, tpr, roc_thresholds = roc_curve(y_encoded, probabilities)
+        precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_encoded, probabilities)
+        calibration_prob_true, calibration_prob_pred = calibration_curve(y_encoded, probabilities, n_bins=min(10, max(2, len(y_encoded) // 5)), strategy="uniform")
+    else:
+        fpr, tpr, roc_thresholds = np.array([0.0, 1.0]), np.array([0.0, 1.0]), np.array([1.0, 0.0])
+        precision_curve, recall_curve, pr_thresholds = np.array([0.0, 1.0]), np.array([1.0, 0.0]), np.array([0.5])
+        calibration_prob_true, calibration_prob_pred = np.array([]), np.array([])
     metrics = {
         "accuracy": round(float(accuracy_score(y_encoded, predicted)), 4),
+        "balancedAccuracy": round(float(balanced_accuracy_score(y_encoded, predicted)), 4),
         "precision": round(float(precision_score(y_encoded, predicted, zero_division=0)), 4),
         "recall": round(float(recall_score(y_encoded, predicted, zero_division=0)), 4),
+        "sensitivity": round(float(recall_score(y_encoded, predicted, zero_division=0)), 4),
+        "specificity": round(float(specificity), 4),
         "f1": round(float(f1_score(y_encoded, predicted, zero_division=0)), 4),
-        "auc": round(float(roc_auc_score(y_encoded, probabilities)) if len(set(y_encoded)) > 1 else 0.5, 4),
-        "confusionMatrix": confusion_matrix(y_encoded, predicted, labels=[0, 1]).tolist(),
+        "auc": round(float(roc_auc_score(y_encoded, probabilities)) if has_both_classes else 0.5, 4),
+        "prAuc": round(float(average_precision_score(y_encoded, probabilities)) if has_both_classes else 0.0, 4),
+        "logLoss": round(float(log_loss(y_encoded, probabilities, labels=[0, 1])), 4),
+        "brierScore": round(float(brier_score_loss(y_encoded, probabilities)), 4),
+        "confusionMatrix": matrix.tolist(),
+        "sampleCount": int(len(y_encoded)),
+        "positiveCount": int(sum(y_encoded)),
+        "negativeCount": int(len(y_encoded) - sum(y_encoded)),
+        "rocCurve": curve_rows(fpr, tpr, roc_thresholds, "fpr", "tpr"),
+        "prCurve": curve_rows(recall_curve, precision_curve, pr_thresholds, "recall", "precision"),
+        "calibrationCurve": curve_rows(calibration_prob_pred, calibration_prob_true, None, "predicted", "observed"),
     }
     predictions = [
         {
@@ -272,8 +433,37 @@ def evaluate_bundle(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> tu
     return metrics, predictions
 
 
+def curve_rows(x_values: Any, y_values: Any, thresholds: Any | None, x_key: str, y_key: str) -> list[dict[str, float]]:
+    rows: list[dict[str, float]] = []
+    threshold_values = list(thresholds) if thresholds is not None else []
+    for index, (x_value, y_value) in enumerate(zip(list(x_values), list(y_values))):
+        row = {
+            x_key: round(float(x_value), 4),
+            y_key: round(float(y_value), 4),
+        }
+        if index < len(threshold_values) and np.isfinite(float(threshold_values[index])):
+            row["threshold"] = round(float(threshold_values[index]), 4)
+        rows.append(row)
+    return rows
+
+
 def load_bundle(path: str) -> dict[str, Any]:
     return joblib.load(path)
+
+
+def model_probabilities(bundle: dict[str, Any], encoded: pd.DataFrame) -> Any:
+    adapter = bundle.get("adapter")
+    if adapter is not None:
+        return adapter.predict_proba(encoded)
+    return bundle["model"].predict_proba(encoded)
+
+
+def model_importances(bundle: dict[str, Any], feature_columns: list[str]) -> list[float]:
+    adapter = bundle.get("adapter")
+    if adapter is not None:
+        return adapter.explain(feature_columns)
+    values = getattr(bundle.get("model"), "feature_importances_", [])
+    return [float(value) for value in values]
 
 
 def slugify(value: str) -> str:

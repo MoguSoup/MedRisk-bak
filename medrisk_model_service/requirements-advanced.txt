@@ -1,0 +1,19 @@
+# Optional advanced tabular models. These are intentionally not installed by
+# the default local/Compose startup path so scikit-learn + XGBoost remain the
+# stable CPU baseline on teaching machines.
+lightgbm
+catboost
+tabpfn
+tabicl
+
+# Optional FT-Transformer style research runtime. Integration is advertised as
+# unavailable unless a compatible local training wrapper is configured.
+rtdl-revisiting-models
+
+# Optional local Hugging Face text generation for the intelligent QA module.
+# Install these only on machines intended to load local/Hub LLM weights.
+transformers
+torch
+accelerate
+sentencepiece
+huggingface_hub

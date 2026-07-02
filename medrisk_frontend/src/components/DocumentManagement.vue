@@ -10,7 +10,7 @@
           <el-input v-model="title" placeholder="默认使用文件名" />
         </el-form-item>
         <el-form-item v-if="isAdmin" label="可见性">
-          <el-select v-model="visibility">
+          <el-select v-model="visibility" placeholder="请选择可见范围">
             <el-option label="公开" value="PUBLIC" />
             <el-option label="医生专用" value="DOCTOR_ONLY" />
             <el-option label="管理员" value="ADMIN_ONLY" />
@@ -42,7 +42,16 @@
         <el-table-column label="可见性" width="110">
           <template #default="{ row }"><el-tag>{{ row.visibilityLabel || visibilityText(row.visibility) }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="graphStatus" label="图谱状态" width="110" />
+        <el-table-column label="图谱状态" width="150">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.graphError" :content="row.graphError" placement="top">
+              <el-tag type="danger">{{ row.graphStatus }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="row.graphStatus === '已构建' ? 'success' : row.graphStatus === '构建失败' ? 'danger' : 'info'">
+              {{ row.graphStatus }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="sourceName" label="来源" min-width="160" show-overflow-tooltip />
         <el-table-column prop="userName" label="上传人" width="120" />
         <el-table-column prop="createdAt" label="上传时间" min-width="170" />
@@ -87,6 +96,7 @@ type KnowledgeDocument = {
   title: string
   fileType: string
   graphStatus: string
+  graphError?: string
   visibility?: string
   visibilityLabel?: string
   summary?: string

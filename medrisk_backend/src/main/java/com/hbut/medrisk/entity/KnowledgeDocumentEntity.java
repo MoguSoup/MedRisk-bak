@@ -33,6 +33,8 @@ public class KnowledgeDocumentEntity {
     private String summary;
     @Column(nullable = false, length = 40)
     private String graphStatus;
+    @Column(length = 1000)
+    private String graphError;
     @Column(nullable = false)
     private Long uploadedBy;
     private String userName;
@@ -69,6 +71,8 @@ public class KnowledgeDocumentEntity {
     public void setSummary(String summary) { this.summary = summary; }
     public String getGraphStatus() { return graphStatus; }
     public void setGraphStatus(String graphStatus) { this.graphStatus = graphStatus; }
+    public String getGraphError() { return graphError; }
+    public void setGraphError(String graphError) { this.graphError = graphError; }
     public Long getUploadedBy() { return uploadedBy; }
     public void setUploadedBy(Long uploadedBy) { this.uploadedBy = uploadedBy; }
     public String getUserName() { return userName; }

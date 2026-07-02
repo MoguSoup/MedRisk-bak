@@ -21,6 +21,8 @@ public class ModelVersionEntity {
     private String diseaseName;
     @Column(nullable = false, length = 80)
     private String modelName;
+    @Column(nullable = false, length = 30)
+    private String modelType = "xgboost";
     @Column(nullable = false, unique = true, length = 120)
     private String version;
     @Lob
@@ -28,6 +30,11 @@ public class ModelVersionEntity {
     private String metricsJson;
     @Lob
     private String featureSchemaJson;
+    @Lob
+    private String hyperparametersJson;
+    private String evaluationDatasetName;
+    private String evaluationDatasetSource;
+    private String evaluationDatasetUrl;
     private String modelPath;
     @Column(nullable = false)
     private Boolean active;
@@ -66,6 +73,14 @@ public class ModelVersionEntity {
         this.modelName = modelName;
     }
 
+    public String getModelType() {
+        return modelType;
+    }
+
+    public void setModelType(String modelType) {
+        this.modelType = modelType;
+    }
+
     public String getVersion() {
         return version;
     }
@@ -88,6 +103,38 @@ public class ModelVersionEntity {
 
     public void setFeatureSchemaJson(String featureSchemaJson) {
         this.featureSchemaJson = featureSchemaJson;
+    }
+
+    public String getHyperparametersJson() {
+        return hyperparametersJson;
+    }
+
+    public void setHyperparametersJson(String hyperparametersJson) {
+        this.hyperparametersJson = hyperparametersJson;
+    }
+
+    public String getEvaluationDatasetName() {
+        return evaluationDatasetName;
+    }
+
+    public void setEvaluationDatasetName(String evaluationDatasetName) {
+        this.evaluationDatasetName = evaluationDatasetName;
+    }
+
+    public String getEvaluationDatasetSource() {
+        return evaluationDatasetSource;
+    }
+
+    public void setEvaluationDatasetSource(String evaluationDatasetSource) {
+        this.evaluationDatasetSource = evaluationDatasetSource;
+    }
+
+    public String getEvaluationDatasetUrl() {
+        return evaluationDatasetUrl;
+    }
+
+    public void setEvaluationDatasetUrl(String evaluationDatasetUrl) {
+        this.evaluationDatasetUrl = evaluationDatasetUrl;
     }
 
     public String getModelPath() {

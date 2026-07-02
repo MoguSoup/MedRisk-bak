@@ -5,11 +5,15 @@ import com.hbut.medrisk.dto.AuthSessionResponse;
 import com.hbut.medrisk.dto.CurrentUserPasswordRequest;
 import com.hbut.medrisk.dto.CurrentUserResponse;
 import com.hbut.medrisk.dto.CurrentUserUpdateRequest;
+import com.hbut.medrisk.dto.EmailCodeRequest;
 import com.hbut.medrisk.dto.LoginRequest;
+import com.hbut.medrisk.dto.PasswordResetRequest;
 import com.hbut.medrisk.dto.RegisterRequest;
 import com.hbut.medrisk.entity.UserEntity;
 import com.hbut.medrisk.service.AuditService;
 import com.hbut.medrisk.service.AuthService;
+import com.hbut.medrisk.service.ClientIpResolver;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,10 +31,12 @@ import org.springframework.web.multipart.MultipartFile;
 public class AuthController {
     private final AuthService authService;
     private final AuditService auditService;
+    private final ClientIpResolver clientIpResolver;
 
-    public AuthController(AuthService authService, AuditService auditService) {
+    public AuthController(AuthService authService, AuditService auditService, ClientIpResolver clientIpResolver) {
         this.authService = authService;
         this.auditService = auditService;
+        this.clientIpResolver = clientIpResolver;
     }
 
     @PostMapping("/register")
@@ -38,9 +44,27 @@ public class AuthController {
         return ApiResponse.ok(authService.register(request));
     }
 
+    @PostMapping("/register/code")
+    ApiResponse<Void> registerCode(@Valid @RequestBody EmailCodeRequest request) {
+        authService.sendRegisterCode(request.email());
+        return ApiResponse.ok(null);
+    }
+
+    @PostMapping("/password/forgot")
+    ApiResponse<Void> forgotPassword(@Valid @RequestBody EmailCodeRequest request) {
+        authService.sendPasswordResetCode(request.email());
+        return ApiResponse.ok(null);
+    }
+
+    @PostMapping("/password/reset")
+    ApiResponse<Void> resetPassword(@Valid @RequestBody PasswordResetRequest request) {
+        authService.resetPassword(request);
+        return ApiResponse.ok(null);
+    }
+
     @PostMapping("/login")
-    ApiResponse<AuthSessionResponse> login(@Valid @RequestBody LoginRequest request) {
-        return ApiResponse.ok(authService.login(request));
+    ApiResponse<AuthSessionResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
+        return ApiResponse.ok(authService.login(request, clientIpResolver.resolve(servletRequest)));
     }
 
     @GetMapping("/me")
@@ -74,9 +98,11 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    ApiResponse<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization) {
+    ApiResponse<Void> logout(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            HttpServletRequest servletRequest) {
         UserEntity user = authService.requireUser(authorization);
-        auditService.log(user.getId(), "LOGOUT", "USER", user.getId().toString(), "{}");
+        auditService.log(user.getId(), "LOGOUT", "USER", user.getId().toString(), "{}", clientIpResolver.resolve(servletRequest));
         return ApiResponse.ok(null);
     }
 }

@@ -5,6 +5,7 @@ import com.hbut.medrisk.dto.CurrentUserPasswordRequest;
 import com.hbut.medrisk.dto.CurrentUserResponse;
 import com.hbut.medrisk.dto.CurrentUserUpdateRequest;
 import com.hbut.medrisk.dto.LoginRequest;
+import com.hbut.medrisk.dto.PasswordResetRequest;
 import com.hbut.medrisk.dto.RegisterRequest;
 import com.hbut.medrisk.entity.UserEntity;
 import com.hbut.medrisk.repository.UserRepository;
@@ -26,32 +27,37 @@ public class AuthService {
     private final JwtService jwtService;
     private final AuditService auditService;
     private final FileStorageService files;
+    private final EmailVerificationService emailVerification;
 
     public AuthService(
             UserRepository users,
             PasswordEncoder passwordEncoder,
             JwtService jwtService,
             AuditService auditService,
-            FileStorageService files) {
+            FileStorageService files,
+            EmailVerificationService emailVerification) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.auditService = auditService;
         this.files = files;
+        this.emailVerification = emailVerification;
     }
 
     @Transactional
     public AuthSessionResponse register(RegisterRequest request) {
+        String email = emailVerification.normalizeEmail(request.email());
         if (users.existsByUsername(request.username())) {
             throw new IllegalArgumentException("用户名已存在");
         }
-        if (users.existsByEmail(request.email())) {
+        if (users.existsByEmail(email)) {
             throw new IllegalArgumentException("邮箱已存在");
         }
+        emailVerification.verifyAndConsume(email, EmailVerificationService.PURPOSE_REGISTER, request.emailCode());
         UserEntity user = new UserEntity();
-        user.setUsername(request.username());
-        user.setEmail(request.email());
-        user.setName(request.name());
+        user.setUsername(request.username().trim());
+        user.setEmail(email);
+        user.setName(request.name().trim());
         user.setRole(normalizeRegisterRole(request.role()));
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         user.setStatus("ACTIVE");
@@ -65,6 +71,11 @@ public class AuthService {
 
     @Transactional
     public AuthSessionResponse login(LoginRequest request) {
+        return login(request, null);
+    }
+
+    @Transactional
+    public AuthSessionResponse login(LoginRequest request, String clientIp) {
         UserEntity user = users.findByUsername(request.username())
                 .orElseThrow(() -> new AuthException("用户名或密码错误"));
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
@@ -74,8 +85,33 @@ public class AuthService {
             throw new AuthException("账号已被禁用，请联系管理员");
         }
         user.setLastLoginAt(LocalDateTime.now());
-        auditService.log(user.getId(), "LOGIN", "USER", user.getId().toString(), "{}");
+        auditService.log(user.getId(), "LOGIN", "USER", user.getId().toString(), "{}", clientIp);
         return sessionFor(user);
+    }
+
+    public void sendRegisterCode(String email) {
+        String normalizedEmail = emailVerification.normalizeEmail(email);
+        if (users.existsByEmail(normalizedEmail)) {
+            throw new IllegalArgumentException("邮箱已存在");
+        }
+        emailVerification.sendCode(normalizedEmail, EmailVerificationService.PURPOSE_REGISTER);
+    }
+
+    public void sendPasswordResetCode(String email) {
+        String normalizedEmail = emailVerification.normalizeEmail(email);
+        if (users.findByEmail(normalizedEmail).isPresent()) {
+            emailVerification.sendCode(normalizedEmail, EmailVerificationService.PURPOSE_PASSWORD_RESET);
+        }
+    }
+
+    @Transactional
+    public void resetPassword(PasswordResetRequest request) {
+        String email = emailVerification.normalizeEmail(request.email());
+        UserEntity user = users.findByEmail(email).orElseThrow(() -> new IllegalArgumentException("邮箱验证码不正确"));
+        emailVerification.verifyAndConsume(email, EmailVerificationService.PURPOSE_PASSWORD_RESET, request.emailCode());
+        user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        user.setUpdatedAt(LocalDateTime.now());
+        auditService.log(user.getId(), "RESET_PASSWORD_BY_EMAIL", "USER", user.getId().toString(), "{}");
     }
 
     public UserEntity requireUser(String authorizationHeader) {

@@ -7,30 +7,30 @@
       </div>
       <el-form label-position="top" class="admin-form-grid">
         <el-form-item label="关联疾病">
-          <el-select v-model="form.diseaseId">
+          <el-select v-model="form.diseaseId" placeholder="请选择关联疾病">
             <el-option v-for="item in diseases" :key="item.id" :label="item.diseaseName" :value="item.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="病历标题">
-          <el-input v-model="form.caseTitle" />
+          <el-input v-model="form.caseTitle" placeholder="如：高血压合并糖尿病随访案例" />
         </el-form-item>
         <el-form-item label="医院">
-          <el-input v-model="form.hospital" />
+          <el-input v-model="form.hospital" placeholder="如：湖北工业大学附属教学医院" />
         </el-form-item>
         <el-form-item label="就诊日期">
-          <el-date-picker v-model="form.visitDate" value-format="YYYY-MM-DD" type="date" />
+          <el-date-picker v-model="form.visitDate" value-format="YYYY-MM-DD" type="date" placeholder="请选择就诊日期" />
         </el-form-item>
         <el-form-item label="年龄">
           <el-input-number v-model="form.patientAge" :min="0" :max="120" />
         </el-form-item>
         <el-form-item label="性别">
-          <el-select v-model="form.patientGender">
+          <el-select v-model="form.patientGender" placeholder="请选择性别">
             <el-option label="男" value="男" />
             <el-option label="女" value="女" />
           </el-select>
         </el-form-item>
         <el-form-item label="严重程度">
-          <el-select v-model="form.severityLevel">
+          <el-select v-model="form.severityLevel" placeholder="请选择严重程度">
             <el-option label="轻度" value="轻度" />
             <el-option label="中度" value="中度" />
             <el-option label="重度" value="重度" />
@@ -38,7 +38,7 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="isAdmin" label="可见性">
-          <el-select v-model="form.visibility">
+          <el-select v-model="form.visibility" placeholder="请选择可见范围">
             <el-option label="公开" value="PUBLIC" />
             <el-option label="医生专用" value="DOCTOR_ONLY" />
             <el-option label="管理员" value="ADMIN_ONLY" />
@@ -51,16 +51,16 @@
           </el-upload>
         </el-form-item>
         <el-form-item label="主诉" class="wide-form-item">
-          <el-input v-model="form.chiefComplaint" type="textarea" :rows="2" />
+          <el-input v-model="form.chiefComplaint" type="textarea" :rows="2" placeholder="填写患者主要不适、持续时间和诱因" />
         </el-form-item>
         <el-form-item label="诊断结果" class="wide-form-item">
-          <el-input v-model="form.diagnosis" type="textarea" :rows="2" />
+          <el-input v-model="form.diagnosis" type="textarea" :rows="2" placeholder="填写诊断结论、检查依据或鉴别诊断" />
         </el-form-item>
         <el-form-item label="治疗方案" class="wide-form-item">
-          <el-input v-model="form.treatmentGiven" type="textarea" :rows="2" />
+          <el-input v-model="form.treatmentGiven" type="textarea" :rows="2" placeholder="填写治疗措施、用药方案和健康建议" />
         </el-form-item>
         <el-form-item label="随访记录" class="wide-form-item">
-          <el-input v-model="form.followupNotes" type="textarea" :rows="2" />
+          <el-input v-model="form.followupNotes" type="textarea" :rows="2" placeholder="填写复诊计划、疗效变化和风险提醒" />
         </el-form-item>
         <el-form-item label="操作">
           <el-button type="primary" :loading="loading" @click="save">保存</el-button>

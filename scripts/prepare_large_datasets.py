@@ -5,6 +5,7 @@ import shutil
 import sys
 import urllib.request
 import zipfile
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,11 @@ RAW_DIR = ROOT / "data" / "raw"
 PROCESSED_DIR = ROOT / "data" / "processed"
 
 BRFSS_XPT_ZIP_URL = "https://www.cdc.gov/brfss/annual_data/2024/files/LLCP2024XPT.zip"
+UCI_HEART_ZIP_URL = "https://archive.ics.uci.edu/static/public/45/heart+disease.zip"
+UCI_CKD_ZIP_URL = "https://archive.ics.uci.edu/static/public/336/chronic+kidney+disease.zip"
+UCI_HEART_PAGE_URL = "https://archive.ics.uci.edu/dataset/45/heart+disease"
+UCI_CKD_PAGE_URL = "https://archive.ics.uci.edu/dataset/336/chronic+kidney+disease"
+UCI_CKD_ARFF_FALLBACK_URL = "https://raw.githubusercontent.com/yli110-stat697/Chronic-Kidney-Disease/master/Data/chronic_kidney_disease.arff"
 NHANES_URLS = {
     "P_MCQ.XPT": "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2017/DataFiles/P_MCQ.XPT",
     "P_BIOPRO.XPT": "https://wwwn.cdc.gov/Nchs/Data/Nhanes/Public/2017/DataFiles/P_BIOPRO.XPT",
@@ -98,7 +104,7 @@ def main() -> int:
     nhanes_paths = prepare_nhanes_xpts()
 
     print(f"Reading BRFSS XPT: {brfss_path}")
-    brfss = normalize_columns(pd.read_sas(brfss_path, format="xport", encoding="latin1"))
+    brfss = read_sas_selected(brfss_path, BRFSS_KEEP_COLUMNS)
     print(f"BRFSS rows={len(brfss):,}, columns={len(brfss.columns):,}")
 
     manifest: dict[str, object] = {
@@ -116,7 +122,16 @@ def main() -> int:
 
     for spec in specs:
         output = spec.builder(brfss)
-        info = write_dataset(spec.disease, output, spec.source, spec.label_rule, len(brfss))
+        info = write_dataset(
+            spec.disease,
+            output,
+            spec.source,
+            spec.label_rule,
+            len(brfss),
+            source_name="CDC BRFSS 2024",
+            source_url="https://www.cdc.gov/brfss/annual_data/annual_2024.html",
+            source_license="CDC public-use data",
+        )
         manifest["datasets"][spec.disease] = info
 
     liver = build_liver_dataset(nhanes_paths)
@@ -126,8 +141,39 @@ def main() -> int:
         "NHANES 2017-March 2020 P_MCQ/P_BIOPRO/P_DEMO/P_BMX",
         "MCQ160L: 1 => 1, 2 => 0; other codes excluded",
         liver.attrs.get("raw_rows", len(liver)),
+        source_name="CDC NHANES 2017-March 2020",
+        source_url="https://wwwn.cdc.gov/nchs/nhanes/continuousnhanes/default.aspx?Cycle=2017-2020",
+        source_license="CDC public-use data",
     )
     manifest["datasets"]["liver"] = liver_info
+
+    heart_uci = build_uci_heart_dataset()
+    manifest["datasets"]["heart_uci"] = write_dataset(
+        "heart_uci",
+        heart_uci,
+        "UCI Heart Disease processed Cleveland",
+        "target: 0 => 0, 1-4 => 1",
+        heart_uci.attrs.get("raw_rows", len(heart_uci)),
+        disease_type="heart",
+        display_name="UCI Heart Disease",
+        source_name="UCI Machine Learning Repository",
+        source_url=UCI_HEART_PAGE_URL,
+        source_license="UCI dataset license / citation required",
+    )
+
+    kidney_uci = build_uci_ckd_dataset()
+    manifest["datasets"]["kidney_uci"] = write_dataset(
+        "kidney_uci",
+        kidney_uci,
+        "UCI Chronic Kidney Disease",
+        "class: ckd => 1, notckd => 0",
+        kidney_uci.attrs.get("raw_rows", len(kidney_uci)),
+        disease_type="kidney",
+        display_name="UCI Chronic Kidney Disease",
+        source_name="UCI Machine Learning Repository",
+        source_url=UCI_CKD_PAGE_URL,
+        source_license="CC BY 4.0",
+    )
 
     manifest_path = PROCESSED_DIR / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -179,6 +225,26 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(column).upper() for column in df.columns]
     return df
+
+
+def read_sas_selected(path: Path, keep_columns: list[str], chunksize: int = 50_000) -> pd.DataFrame:
+    """Read a large XPT/SAS file without materializing every source column."""
+    wanted = {column.upper() for column in keep_columns}
+    frames: list[pd.DataFrame] = []
+    reader = pd.read_sas(path, format="xport", encoding="latin1", chunksize=chunksize)
+    for index, chunk in enumerate(reader, start=1):
+        chunk = normalize_columns(chunk)
+        present = [column for column in chunk.columns if column in wanted]
+        frames.append(chunk[present].copy())
+        if index == 1 or index % 5 == 0:
+            print(f"  BRFSS chunk {index}: rows={sum(len(frame) for frame in frames):,}, kept_columns={len(present)}")
+    if not frames:
+        return pd.DataFrame(columns=keep_columns)
+    df = pd.concat(frames, ignore_index=True, copy=False)
+    for column in keep_columns:
+        if column not in df.columns:
+            df[column] = pd.NA
+    return df[[column for column in keep_columns if column in df.columns]]
 
 
 def first_existing(df: pd.DataFrame, names: list[str]) -> pd.Series:
@@ -344,20 +410,127 @@ def build_liver_dataset(paths: dict[str, Path]) -> pd.DataFrame:
     return output
 
 
-def write_dataset(disease: str, df: pd.DataFrame, source: str, label_rule: str, raw_rows: int) -> dict[str, object]:
+def build_uci_heart_dataset() -> pd.DataFrame:
+    zip_path = RAW_DIR / "uci_heart_disease.zip"
+    download(UCI_HEART_ZIP_URL, zip_path)
+    extract_dir = RAW_DIR / "uci_heart_disease"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(extract_dir)
+    candidates = list(extract_dir.rglob("processed.cleveland.data"))
+    if not candidates:
+        candidates = [path for path in extract_dir.rglob("*") if path.is_file() and "cleveland" in path.name.lower()]
+    if not candidates:
+        raise FileNotFoundError("UCI Heart Disease ZIP did not contain processed Cleveland data")
+    columns = [
+        "age", "sex", "chestPainType", "restingBloodPressure", "cholesterol", "fastingBloodSugar",
+        "restingEcg", "maxHeartRate", "exerciseAngina", "oldpeak", "slope", "majorVessels", "thal", "target",
+    ]
+    raw = pd.read_csv(candidates[0], names=columns, na_values="?")
+    label = pd.to_numeric(raw["target"], errors="coerce").map(lambda value: 1 if value and value > 0 else 0)
+    features = raw.drop(columns=["target"]).apply(pd.to_numeric, errors="coerce")
+    features = clean_feature_frame(features)
+    output = attach_label(features, label, [])
+    output.attrs["raw_rows"] = len(raw)
+    return output
+
+
+def build_uci_ckd_dataset() -> pd.DataFrame:
+    zip_path = RAW_DIR / "uci_chronic_kidney_disease.zip"
+    download(UCI_CKD_ZIP_URL, zip_path)
+    extract_dir = RAW_DIR / "uci_chronic_kidney_disease"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(extract_dir)
+    candidates = sorted(extract_dir.rglob("*.arff"))
+    if not candidates:
+        fallback = RAW_DIR / "chronic_kidney_disease.arff"
+        download(UCI_CKD_ARFF_FALLBACK_URL, fallback)
+        candidates = [fallback]
+    attrs: list[str] = []
+    rows: list[list[str]] = []
+    in_data = False
+    for raw_line in candidates[0].read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("%"):
+            continue
+        lower = line.lower()
+        if lower.startswith("@attribute"):
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 2:
+                attrs.append(parts[1].strip("'\""))
+        elif lower.startswith("@data"):
+            in_data = True
+        elif in_data:
+            rows.extend(csv.reader([line]))
+    if not attrs or not rows:
+        raise ValueError("UCI CKD ARFF file could not be parsed")
+    raw = pd.DataFrame(rows, columns=attrs[: len(rows[0])])
+    raw = raw.replace({"?": pd.NA, "\t?": pd.NA})
+    label_column = "class" if "class" in raw.columns else raw.columns[-1]
+    label = raw[label_column].astype(str).str.strip().str.replace("\t", "", regex=False).map({"ckd": 1, "notckd": 0})
+    features = raw.drop(columns=[label_column]).copy()
+    for column in features.columns:
+        numeric = pd.to_numeric(features[column], errors="coerce")
+        if numeric.notna().mean() >= 0.7:
+            features[column] = numeric.fillna(numeric.median())
+        else:
+            features[column] = features[column].astype(str).str.strip().replace({"<NA>": "unknown", "nan": "unknown", "": "unknown"}).fillna("unknown")
+    output = attach_label(features, label, [])
+    output.attrs["raw_rows"] = len(raw)
+    return output
+
+
+def split_train_eval(df: pd.DataFrame, eval_fraction: float = 0.2) -> tuple[pd.DataFrame, pd.DataFrame]:
+    eval_parts = []
+    for _, group in df.groupby("label", dropna=False):
+        eval_count = max(1, int(round(len(group) * eval_fraction)))
+        eval_parts.append(group.sample(n=min(eval_count, len(group)), random_state=42))
+    eval_df = pd.concat(eval_parts).sort_index()
+    train_df = df.drop(index=eval_df.index)
+    return train_df.reset_index(drop=True), eval_df.reset_index(drop=True)
+
+
+def write_dataset(
+    dataset_id: str,
+    df: pd.DataFrame,
+    source: str,
+    label_rule: str,
+    raw_rows: int,
+    disease_type: str | None = None,
+    display_name: str | None = None,
+    source_name: str | None = None,
+    source_url: str | None = None,
+    source_license: str | None = None,
+) -> dict[str, object]:
     if "label" not in df.columns:
-        raise ValueError(f"{disease} dataset has no label column")
+        raise ValueError(f"{dataset_id} dataset has no label column")
     feature_columns = [column for column in df.columns if column != "label"]
     df = df[feature_columns + ["label"]]
-    output = PROCESSED_DIR / f"{disease}.csv"
+    output = PROCESSED_DIR / f"{dataset_id}.csv"
+    train_df, eval_df = split_train_eval(df)
+    train_output = PROCESSED_DIR / f"{dataset_id}_train.csv"
+    eval_output = PROCESSED_DIR / f"{dataset_id}_eval.csv"
     df.to_csv(output, index=False, encoding="utf-8")
+    train_df.to_csv(train_output, index=False, encoding="utf-8")
+    eval_df.to_csv(eval_output, index=False, encoding="utf-8")
     label_counts = {str(int(key)): int(value) for key, value in df["label"].value_counts().sort_index().items()}
     info = {
+        "datasetId": dataset_id,
+        "diseaseType": disease_type or dataset_id,
+        "displayName": display_name or dataset_id,
         "file": str(output),
+        "trainFile": str(train_output),
+        "evaluationFile": str(eval_output),
         "source": source,
+        "sourceName": source_name or source,
+        "sourceUrl": source_url or source,
+        "sourceLicense": source_license or "Public-use data",
         "labelRule": label_rule,
         "rawRows": int(raw_rows),
         "rows": int(len(df)),
+        "trainRows": int(len(train_df)),
+        "evaluationRows": int(len(eval_df)),
         "positiveRows": int(label_counts.get("1", 0)),
         "negativeRows": int(label_counts.get("0", 0)),
         "featureCount": len(feature_columns),
@@ -373,15 +546,15 @@ def write_readme(manifest: dict[str, object]) -> None:
         "",
         "这些 CSV 由 `scripts/prepare-large-datasets.ps1` 自动生成，可在管理后台上传。",
         "",
-        "| 文件 | 管理后台病种值 | 行数 | 阳性 | 阴性 |",
-        "|---|---|---:|---:|---:|",
+        "| 文件 | 管理后台病种值 | 训练行数 | 评估行数 | 阳性 | 阴性 | 来源 |",
+        "|---|---|---:|---:|---:|---:|---|",
     ]
     datasets = manifest.get("datasets", {})
     if isinstance(datasets, dict):
         for disease, info in datasets.items():
             if isinstance(info, dict):
                 lines.append(
-                    f"| `{disease}.csv` | `{disease}` | {info.get('rows', 0)} | {info.get('positiveRows', 0)} | {info.get('negativeRows', 0)} |"
+                    f"| `{info.get('datasetId', disease)}.csv` | `{info.get('diseaseType', disease)}` | {info.get('trainRows', 0)} | {info.get('evaluationRows', 0)} | {info.get('positiveRows', 0)} | {info.get('negativeRows', 0)} | {info.get('sourceName', info.get('source', ''))} |"
                 )
     lines.extend(
         [

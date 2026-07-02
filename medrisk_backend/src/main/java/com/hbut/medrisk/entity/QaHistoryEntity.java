@@ -32,6 +32,25 @@ public class QaHistoryEntity {
     private String diseaseCaseMatchesJson;
     @Lob
     private String keywordsJson;
+    private String usedModel;
+    private String provider;
+    private Long modelProfileId;
+    @Column(length = 20, nullable = false)
+    private String chatMode = "medical";
+    @Column(nullable = false)
+    private Boolean retrievalUsed = true;
+    @Column(length = 40, nullable = false)
+    private String retrievalStatus = "success";
+    @Column(nullable = false)
+    private Boolean reasoningEnabled = false;
+    @Lob
+    private String reasoningContent;
+    @Column(nullable = false)
+    private Boolean fallbackUsed = false;
+    @Lob
+    private String evidenceSourcesJson;
+    @Lob
+    private String generatedImagesJson;
     private String imageBucket;
     @Column(length = 500)
     private String imageObjectKey;
@@ -61,6 +80,28 @@ public class QaHistoryEntity {
     public void setDiseaseCaseMatchesJson(String diseaseCaseMatchesJson) { this.diseaseCaseMatchesJson = diseaseCaseMatchesJson; }
     public String getKeywordsJson() { return keywordsJson; }
     public void setKeywordsJson(String keywordsJson) { this.keywordsJson = keywordsJson; }
+    public String getUsedModel() { return usedModel; }
+    public void setUsedModel(String usedModel) { this.usedModel = usedModel; }
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
+    public Long getModelProfileId() { return modelProfileId; }
+    public void setModelProfileId(Long modelProfileId) { this.modelProfileId = modelProfileId; }
+    public String getChatMode() { return chatMode; }
+    public void setChatMode(String chatMode) { this.chatMode = chatMode; }
+    public Boolean getRetrievalUsed() { return retrievalUsed; }
+    public void setRetrievalUsed(Boolean retrievalUsed) { this.retrievalUsed = retrievalUsed; }
+    public String getRetrievalStatus() { return retrievalStatus; }
+    public void setRetrievalStatus(String retrievalStatus) { this.retrievalStatus = retrievalStatus; }
+    public Boolean getReasoningEnabled() { return reasoningEnabled; }
+    public void setReasoningEnabled(Boolean reasoningEnabled) { this.reasoningEnabled = reasoningEnabled; }
+    public String getReasoningContent() { return reasoningContent; }
+    public void setReasoningContent(String reasoningContent) { this.reasoningContent = reasoningContent; }
+    public Boolean getFallbackUsed() { return fallbackUsed; }
+    public void setFallbackUsed(Boolean fallbackUsed) { this.fallbackUsed = fallbackUsed; }
+    public String getEvidenceSourcesJson() { return evidenceSourcesJson; }
+    public void setEvidenceSourcesJson(String evidenceSourcesJson) { this.evidenceSourcesJson = evidenceSourcesJson; }
+    public String getGeneratedImagesJson() { return generatedImagesJson; }
+    public void setGeneratedImagesJson(String generatedImagesJson) { this.generatedImagesJson = generatedImagesJson; }
     public String getImageBucket() { return imageBucket; }
     public void setImageBucket(String imageBucket) { this.imageBucket = imageBucket; }
     public String getImageObjectKey() { return imageObjectKey; }

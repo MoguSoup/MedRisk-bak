@@ -30,7 +30,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -47,6 +49,7 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class AdminTrainingService {
     private static final List<String> TERMINAL_STATUS = List.of("训练成功", "训练失败", "训练终止", "评估完成");
+    private static final List<String> MODEL_TYPES = List.of("xgboost", "tabpfn", "tabicl");
 
     private final TrainingDatasetRepository datasets;
     private final ModelTrainingJobRepository jobs;
@@ -58,6 +61,7 @@ public class AdminTrainingService {
     private final AuditService auditService;
     private final Path uploadRoot;
     private final Path trainingRoot;
+    private final Path publicDatasetRoot;
     private final String modelServiceUrl;
 
     public AdminTrainingService(
@@ -71,6 +75,7 @@ public class AdminTrainingService {
             AuditService auditService,
             @Value("${medrisk.upload-dir}") String uploadDir,
             @Value("${medrisk.training-output-dir}") String trainingOutputDir,
+            @Value("${medrisk.public-dataset-dir:data/processed}") String publicDatasetDir,
             @Value("${medrisk.model-service-url}") String modelServiceUrl) {
         this.datasets = datasets;
         this.jobs = jobs;
@@ -82,11 +87,99 @@ public class AdminTrainingService {
         this.auditService = auditService;
         this.uploadRoot = Path.of(uploadDir).toAbsolutePath().normalize();
         this.trainingRoot = Path.of(trainingOutputDir).toAbsolutePath().normalize();
+        this.publicDatasetRoot = Path.of(publicDatasetDir).toAbsolutePath().normalize();
         this.modelServiceUrl = modelServiceUrl;
     }
 
     public List<TrainingDatasetResponse> listDatasets() {
         return datasets.findTop200ByOrderByCreatedAtDesc().stream().map(this::toDatasetResponse).toList();
+    }
+
+    @Transactional
+    public List<TrainingDatasetResponse> importPublicDatasets(UserEntity user) {
+        Path manifestPath = publicDatasetRoot.resolve("manifest.json").normalize();
+        if (!Files.exists(manifestPath)) {
+            throw new IllegalStateException("未找到公开数据集 manifest，请先运行 scripts/prepare-large-datasets.ps1");
+        }
+        try {
+            Map<String, Object> manifest = objectMapper.readValue(manifestPath.toFile(), new TypeReference<>() {});
+            Object rawDatasets = manifest.get("datasets");
+            if (!(rawDatasets instanceof Map<?, ?> datasetMap) || datasetMap.isEmpty()) {
+                throw new IllegalStateException("公开数据集 manifest 中没有 datasets");
+            }
+            List<TrainingDatasetResponse> imported = new ArrayList<>();
+            for (Map.Entry<?, ?> entry : datasetMap.entrySet()) {
+                if (!(entry.getValue() instanceof Map<?, ?> rawInfo)) continue;
+                Map<String, Object> info = new LinkedHashMap<>();
+                rawInfo.forEach((key, value) -> info.put(String.valueOf(key), value));
+                String diseaseType = string(info.get("diseaseType"), String.valueOf(entry.getKey()));
+                imported.add(toDatasetResponse(upsertPublicDataset(user, diseaseType, info, "train")));
+                if (info.containsKey("evaluationFile")) {
+                    imported.add(toDatasetResponse(upsertPublicDataset(user, diseaseType, info, "evaluation")));
+                }
+            }
+            auditService.log(user.getId(), "IMPORT_PUBLIC_DATASETS", "TRAINING_DATASET", "PUBLIC", "{}");
+            return imported;
+        } catch (IOException ex) {
+            throw new IllegalStateException("读取公开数据集 manifest 失败: " + ex.getMessage());
+        }
+    }
+
+    private TrainingDatasetEntity upsertPublicDataset(UserEntity user, String diseaseType, Map<String, Object> info, String split) {
+        Path csvPath = resolvePublicDatasetPath(diseaseType, info, split);
+        String datasetId = string(info.get("datasetId"), diseaseType);
+        String sourceRecordId = "public-dataset:" + datasetId + ":" + split;
+        TrainingDatasetEntity row = datasets.findBySourceRecordId(sourceRecordId).orElseGet(TrainingDatasetEntity::new);
+        LocalDateTime now = LocalDateTime.now();
+        boolean creating = row.getId() == null;
+        row.setName(publicDatasetName(diseaseType, string(info.get("displayName"), diseaseType), split));
+        row.setDiseaseType(diseaseType);
+        row.setDescription("公开数据集自动导入；标签规则：" + string(info.get("labelRule"), "见 manifest"));
+        row.setFileName(csvPath.getFileName().toString());
+        row.setFilePath(csvPath.toString());
+        row.setFileType("csv");
+        row.setStatus("UPLOADED");
+        row.setUploadedBy(user.getId());
+        row.setSourceName(string(info.get("sourceName"), string(info.get("source"), "Public dataset")));
+        row.setSourceUrl(string(info.get("sourceUrl"), ""));
+        row.setSourceLicense(string(info.get("sourceLicense"), "Public-use data"));
+        row.setSourceRecordId(sourceRecordId);
+        row.setVisibility("ADMIN_ONLY");
+        if (creating) {
+            row.setCreatedAt(now);
+        }
+        row.setUpdatedAt(now);
+        applyValidation(row);
+        return datasets.save(row);
+    }
+
+    private Path resolvePublicDatasetPath(String diseaseType, Map<String, Object> info, String split) {
+        String key = "evaluation".equals(split) ? "evaluationFile" : "trainFile";
+        String fallbackName = "evaluation".equals(split) ? diseaseType + "_eval.csv" : diseaseType + "_train.csv";
+        String configured = string(info.get(key), "");
+        Path candidate = configured.isBlank() ? publicDatasetRoot.resolve(fallbackName) : Path.of(configured);
+        if (!Files.exists(candidate)) {
+            candidate = publicDatasetRoot.resolve(fileNameOnly(configured, fallbackName));
+        }
+        if (!Files.exists(candidate) && !"evaluation".equals(split)) {
+            candidate = publicDatasetRoot.resolve(diseaseType + ".csv");
+        }
+        if (!Files.exists(candidate)) {
+            throw new IllegalStateException("公开数据集文件不存在: " + candidate);
+        }
+        return candidate.toAbsolutePath().normalize();
+    }
+
+    private String fileNameOnly(String value, String fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        String normalized = value.replace("\\", "/");
+        int index = normalized.lastIndexOf('/');
+        return index >= 0 ? normalized.substring(index + 1) : normalized;
+    }
+
+    private String publicDatasetName(String diseaseType, String displayName, String split) {
+        String base = displayName == null || displayName.isBlank() || displayName.equals(diseaseType) ? diseaseName(diseaseType) : displayName;
+        return base + ("evaluation".equals(split) ? "公开评估集" : "公开训练集");
     }
 
     @Transactional
@@ -165,38 +258,85 @@ public class AdminTrainingService {
         return jobs.findTop200ByOrderByCreatedAtDesc().stream().map(this::syncAndMapJob).toList();
     }
 
+    public List<Map<String, Object>> modelCapabilities() {
+        try {
+            List<Map<String, Object>> response = restTemplate.getForObject(modelServiceUrl + "/models/capabilities", List.class);
+            if (response != null && !response.isEmpty()) {
+                return response;
+            }
+        } catch (RestClientException ignored) {
+            // Keep the admin UI usable when the model service is temporarily unavailable.
+        }
+        return List.of(
+                capability("xgboost", "XGBoost 稳定基线", true, null),
+                capability("logistic_regression", "Logistic Regression 可解释基线", true, null),
+                capability("random_forest", "Random Forest 随机森林", true, null),
+                capability("extra_trees", "ExtraTrees 极端随机树", true, null),
+                capability("hist_gradient_boosting", "HistGradientBoosting 直方图提升树", true, null),
+                capability("lightgbm", "LightGBM 梯度提升树", false, "模型服务不可用或未安装可选依赖 lightgbm"),
+                capability("catboost", "CatBoost 类别特征提升树", false, "模型服务不可用或未安装可选依赖 catboost"),
+                capability("tabpfn", "TabPFN 表格基础模型", false, "模型服务不可用或未安装可选依赖"),
+                capability("tabicl", "TabICL 表格上下文学习模型", false, "模型服务不可用或未安装可选依赖"),
+                capability("ft_transformer", "FT-Transformer 论文模型", false, "需要额外深度表格训练运行时"));
+    }
+
     @Transactional
     public TrainingJobResponse createJob(TrainingJobRequest request, UserEntity user) {
         TrainingDatasetEntity dataset = requireDataset(request.datasetId());
         if (!"VALID".equals(dataset.getStatus())) {
             throw new IllegalArgumentException("数据集未通过校验，不能训练");
         }
+        TrainingDatasetEntity evaluationDataset = null;
+        if (request.evaluationDatasetId() != null) {
+            evaluationDataset = requireDataset(request.evaluationDatasetId());
+            if (!"VALID".equals(evaluationDataset.getStatus())) {
+                throw new IllegalArgumentException("评估数据集未通过校验，不能用于训练后评估");
+            }
+            if (!Objects.equals(dataset.getDiseaseType(), evaluationDataset.getDiseaseType())) {
+                throw new IllegalArgumentException("训练数据集和评估数据集必须属于同一病种");
+            }
+        }
         LocalDateTime now = LocalDateTime.now();
+        String modelType = normalizeModelType(request.modelType());
+        Map<String, Object> hyperparameters = normalizeHyperparameters(modelType, request);
         ModelTrainingJobEntity job = new ModelTrainingJobEntity();
         job.setDatasetId(dataset.getId());
+        job.setEvaluationDatasetId(evaluationDataset == null ? null : evaluationDataset.getId());
         job.setUserId(user.getId());
         job.setDiseaseType(dataset.getDiseaseType());
         job.setModelName(request.modelName());
+        job.setModelType(modelType);
         job.setTrainStatus("准备训练");
         job.setProgress(0);
-        job.setTrainEpoch(request.epochs() == null ? 30 : request.epochs());
-        job.setLearningRate(request.learningRate() == null ? 0.05 : request.learningRate());
-        job.setTestSize(request.testSize() == null ? 0.2 : request.testSize());
+        job.setTrainEpoch(intValue(hyperparameters.get("nEstimators"), request.epochs() == null ? ("xgboost".equals(modelType) ? 80 : 1) : request.epochs()));
+        job.setLearningRate(doubleValue(hyperparameters.get("learningRate"), "xgboost".equals(modelType) ? (request.learningRate() == null ? 0.05 : request.learningRate()) : 0.0));
+        job.setTestSize(doubleValue(hyperparameters.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+        job.setHyperparametersJson(writeMap(hyperparameters));
         job.setCreatedAt(now);
         job.setUpdatedAt(now);
         jobs.save(job);
         Path outputDir = trainingRoot.resolve("job-" + job.getId()).normalize();
         ensureInside(trainingRoot, outputDir);
         try {
-            Map<String, Object> startRequest = Map.of(
-                    "taskId", job.getId().toString(),
-                    "datasetPath", dataset.getFilePath(),
-                    "diseaseType", job.getDiseaseType(),
-                    "modelName", job.getModelName(),
-                    "epochs", job.getTrainEpoch(),
-                    "learningRate", job.getLearningRate(),
-                    "testSize", job.getTestSize(),
-                    "outputDir", outputDir.toString());
+            Map<String, Object> startRequest = new LinkedHashMap<>();
+            startRequest.put("taskId", job.getId().toString());
+            startRequest.put("datasetPath", dataset.getFilePath());
+            startRequest.put("diseaseType", job.getDiseaseType());
+            startRequest.put("modelName", job.getModelName());
+            startRequest.put("modelType", job.getModelType());
+            startRequest.put("epochs", job.getTrainEpoch());
+            startRequest.put("learningRate", job.getLearningRate());
+            startRequest.put("testSize", job.getTestSize());
+            startRequest.put("hyperparameters", hyperparameters);
+            startRequest.put("outputDir", outputDir.toString());
+            if (evaluationDataset != null) {
+                startRequest.put("evaluationDatasetPath", evaluationDataset.getFilePath());
+                startRequest.put("evaluationDatasetName", evaluationDataset.getName());
+                startRequest.put("evaluationDatasetSource", evaluationDataset.getSourceName());
+                startRequest.put("evaluationDatasetUrl", evaluationDataset.getSourceUrl());
+                startRequest.put("evaluationDatasetLicense", evaluationDataset.getSourceLicense());
+                startRequest.put("evaluationSampleCount", evaluationDataset.getSampleCount());
+            }
             Map<String, Object> response = restTemplate.postForObject(modelServiceUrl + "/training/start", startRequest, Map.class);
             applyTaskResponse(job, response);
         } catch (RestClientException ex) {
@@ -353,6 +493,14 @@ public class AdminTrainingService {
         job.setModelPath(string(response.get("modelPath"), job.getModelPath()));
         job.setHistoryPath(string(response.get("historyPath"), job.getHistoryPath()));
         job.setMetadataPath(string(response.get("metadataPath"), job.getMetadataPath()));
+        Object hyperparameters = response.get("hyperparameters");
+        if (hyperparameters != null) {
+            try {
+                job.setHyperparametersJson(objectMapper.writeValueAsString(hyperparameters));
+            } catch (Exception ignored) {
+                // Keep existing hyperparameter record.
+            }
+        }
         Object metrics = response.get("metrics");
         if (metrics != null) {
             try {
@@ -372,9 +520,22 @@ public class AdminTrainingService {
             version.setDiseaseType(job.getDiseaseType());
             version.setDiseaseName(diseaseName(job.getDiseaseType()));
             version.setModelName(job.getModelName());
+            version.setModelType(normalizeModelType(job.getModelType()));
             version.setVersion(job.getModelVersion());
             version.setMetricsJson(job.getMetricsJson() == null ? "{}" : job.getMetricsJson());
             version.setFeatureSchemaJson("[]");
+            version.setHyperparametersJson(job.getHyperparametersJson());
+            TrainingDatasetEntity evaluationDataset = job.getEvaluationDatasetId() == null ? null : datasets.findById(job.getEvaluationDatasetId()).orElse(null);
+            if (evaluationDataset != null) {
+                version.setEvaluationDatasetName(evaluationDataset.getName());
+                version.setEvaluationDatasetSource(evaluationDataset.getSourceName());
+                version.setEvaluationDatasetUrl(evaluationDataset.getSourceUrl());
+            } else {
+                Map<String, Object> metrics = readMap(job.getMetricsJson());
+                version.setEvaluationDatasetName(string(metrics.get("evaluationDataset"), null));
+                version.setEvaluationDatasetSource(string(metrics.get("datasetSource"), null));
+                version.setEvaluationDatasetUrl(string(metrics.get("datasetUrl"), null));
+            }
             version.setModelPath(job.getModelPath());
             version.setActive(false);
             version.setCreatedAt(LocalDateTime.now());
@@ -475,19 +636,26 @@ public class AdminTrainingService {
 
     private TrainingJobResponse toJobResponse(ModelTrainingJobEntity job) {
         TrainingDatasetEntity dataset = datasets.findById(job.getDatasetId()).orElse(null);
+        TrainingDatasetEntity evaluationDataset = job.getEvaluationDatasetId() == null ? null : datasets.findById(job.getEvaluationDatasetId()).orElse(null);
         return new TrainingJobResponse(
                 job.getId(),
                 job.getDatasetId(),
                 dataset == null ? "" : dataset.getName(),
+                job.getEvaluationDatasetId(),
+                evaluationDataset == null ? null : evaluationDataset.getName(),
+                evaluationDataset == null ? null : evaluationDataset.getSourceName(),
+                evaluationDataset == null ? null : evaluationDataset.getSourceUrl(),
                 job.getUserId(),
                 job.getDiseaseType(),
                 job.getModelName(),
+                normalizeModelType(job.getModelType()),
                 job.getTrainStatus(),
                 job.getProgress(),
                 job.getCurrentLoss(),
                 job.getTrainEpoch(),
                 job.getLearningRate(),
                 job.getTestSize(),
+                readMap(job.getHyperparametersJson()),
                 job.getModelVersion(),
                 job.getModelPath(),
                 job.getHistoryPath(),
@@ -535,8 +703,13 @@ public class AdminTrainingService {
                 model.getDiseaseType(),
                 model.getDiseaseName(),
                 model.getModelName(),
+                normalizeModelType(model.getModelType()),
                 model.getVersion(),
                 readMap(model.getMetricsJson()),
+                readMap(model.getHyperparametersJson()),
+                firstNonBlank(model.getEvaluationDatasetName(), string(readMap(model.getMetricsJson()).get("evaluationDataset"), null)),
+                firstNonBlank(model.getEvaluationDatasetSource(), string(readMap(model.getMetricsJson()).get("datasetSource"), null)),
+                firstNonBlank(model.getEvaluationDatasetUrl(), string(readMap(model.getMetricsJson()).get("datasetUrl"), null)),
                 Boolean.TRUE.equals(model.getActive()),
                 model.getCreatedAt());
     }
@@ -547,6 +720,43 @@ public class AdminTrainingService {
         } catch (Exception ex) {
             return Map.of();
         }
+    }
+
+    private String writeMap(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload == null ? Map.of() : payload);
+        } catch (Exception ex) {
+            return "{}";
+        }
+    }
+
+    private Map<String, Object> normalizeHyperparameters(String modelType, TrainingJobRequest request) {
+        Map<String, Object> input = request.hyperparameters() == null ? Map.of() : request.hyperparameters();
+        Map<String, Object> output = new LinkedHashMap<>();
+        if ("tabpfn".equals(modelType)) {
+            output.put("maxTrainSamples", intValue(input.get("maxTrainSamples"), 10000));
+            output.put("device", string(input.get("device"), "auto"));
+            output.put("ensembleSize", intValue(input.get("ensembleSize"), 8));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
+        if ("tabicl".equals(modelType)) {
+            output.put("contextSize", intValue(input.get("contextSize"), 2048));
+            output.put("maxTrainSamples", intValue(input.get("maxTrainSamples"), 10000));
+            output.put("device", string(input.get("device"), "auto"));
+            output.put("seed", intValue(input.get("seed"), 42));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
+        output.put("nEstimators", intValue(input.get("nEstimators"), request.epochs() == null ? 80 : request.epochs()));
+        output.put("maxDepth", intValue(input.get("maxDepth"), 3));
+        output.put("learningRate", doubleValue(input.get("learningRate"), request.learningRate() == null ? 0.05 : request.learningRate()));
+        output.put("subsample", doubleValue(input.get("subsample"), 0.9));
+        output.put("colsampleBytree", doubleValue(input.get("colsampleBytree"), 0.9));
+        output.put("regLambda", doubleValue(input.get("regLambda"), 1.0));
+        output.put("minChildWeight", doubleValue(input.get("minChildWeight"), 1.0));
+        output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+        return output;
     }
 
     private List<String> readList(String json) {
@@ -633,6 +843,15 @@ public class AdminTrainingService {
         }
     }
 
+    private Double doubleValue(Object value, Double fallback) {
+        Double parsed = doubleValue(value);
+        return parsed == null ? fallback : parsed;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
     private String diseaseName(String diseaseType) {
         return switch (diseaseType) {
             case "diabetes" -> "糖尿病";
@@ -642,6 +861,22 @@ public class AdminTrainingService {
             case "stroke" -> "中风";
             default -> diseaseType;
         };
+    }
+
+    private String normalizeModelType(String value) {
+        String normalized = value == null || value.isBlank() ? "xgboost" : value.trim().toLowerCase(Locale.ROOT);
+        return MODEL_TYPES.contains(normalized) ? normalized : "xgboost";
+    }
+
+    private Map<String, Object> capability(String modelType, String label, boolean available, String reason) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("modelType", modelType);
+        map.put("label", label);
+        map.put("available", available);
+        if (reason != null) {
+            map.put("reason", reason);
+        }
+        return map;
     }
 
     private record DatasetValidation(int sampleCount, List<String> featureColumns) {

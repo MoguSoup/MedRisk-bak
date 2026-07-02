@@ -10,19 +10,19 @@
           <el-input v-model="form.diseaseCode" placeholder="ICD-10 编号" />
         </el-form-item>
         <el-form-item label="疾病名称">
-          <el-input v-model="form.diseaseName" />
+          <el-input v-model="form.diseaseName" placeholder="如：2 型糖尿病" />
         </el-form-item>
         <el-form-item label="英文名称">
-          <el-input v-model="form.diseaseNameEn" />
+          <el-input v-model="form.diseaseNameEn" placeholder="如：Type 2 Diabetes Mellitus" />
         </el-form-item>
         <el-form-item label="就诊科室">
-          <el-input v-model="form.department" />
+          <el-input v-model="form.department" placeholder="如：内分泌科" />
         </el-form-item>
         <el-form-item label="疾病类别">
-          <el-input v-model="form.diseaseCategory" />
+          <el-input v-model="form.diseaseCategory" placeholder="如：代谢性疾病" />
         </el-form-item>
         <el-form-item label="严重程度">
-          <el-select v-model="form.severityLevel">
+          <el-select v-model="form.severityLevel" placeholder="请选择严重程度">
             <el-option label="轻度" value="轻度" />
             <el-option label="中度" value="中度" />
             <el-option label="重度" value="重度" />
@@ -30,7 +30,7 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="isAdmin" label="可见性">
-          <el-select v-model="form.visibility">
+          <el-select v-model="form.visibility" placeholder="请选择可见范围">
             <el-option label="公开" value="PUBLIC" />
             <el-option label="医生专用" value="DOCTOR_ONLY" />
             <el-option label="管理员" value="ADMIN_ONLY" />
@@ -46,13 +46,13 @@
           </el-upload>
         </el-form-item>
         <el-form-item label="症状" class="wide-form-item">
-          <el-input v-model="form.symptoms" type="textarea" :rows="2" />
+          <el-input v-model="form.symptoms" type="textarea" :rows="2" placeholder="填写典型症状，多个症状可用顿号分隔" />
         </el-form-item>
         <el-form-item label="治疗方案" class="wide-form-item">
-          <el-input v-model="form.treatmentPlan" type="textarea" :rows="2" />
+          <el-input v-model="form.treatmentPlan" type="textarea" :rows="2" placeholder="填写常见治疗、用药或生活方式干预建议" />
         </el-form-item>
         <el-form-item label="详细描述" class="wide-form-item">
-          <el-input v-model="form.description" type="textarea" :rows="3" />
+          <el-input v-model="form.description" type="textarea" :rows="3" placeholder="补充病因、风险因素、检查项目和注意事项" />
         </el-form-item>
         <el-form-item label="操作">
           <el-button type="primary" :loading="loading" @click="save">保存</el-button>

@@ -3,6 +3,8 @@ package com.hbut.medrisk.config;
 import com.hbut.medrisk.dto.ApiResponse;
 import com.hbut.medrisk.service.AuthException;
 import jakarta.persistence.EntityNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -12,6 +14,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
     @ExceptionHandler(AuthException.class)
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     ApiResponse<Void> auth(AuthException ex) {
@@ -51,6 +55,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     ApiResponse<Void> error(Exception ex) {
+        log.error("Unhandled API exception", ex);
         return ApiResponse.fail(500, "系统暂时不可用，请稍后重试");
     }
 }

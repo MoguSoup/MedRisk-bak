@@ -22,7 +22,11 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-@SpringBootTest(properties = "medrisk.neo4j.uri=bolt://127.0.0.1:1")
+@SpringBootTest(properties = {
+        "medrisk.neo4j.uri=bolt://127.0.0.1:1",
+        "medrisk.mail.skip-send=true",
+        "medrisk.mail.test-code=123456"
+})
 @AutoConfigureMockMvc
 class MedRiskApplicationTests {
     @Autowired
@@ -37,6 +41,106 @@ class MedRiskApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.status").value("UP"));
+    }
+
+    @Test
+    void auditLogsIncludeLoginClientIp() throws Exception {
+        MvcResult forwardedLogin = mockMvc.perform(post("/api/auth/login")
+                        .header("X-Forwarded-For", "unknown, 203.0.113.9, 10.0.0.1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "admin", "password", "123456"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        String adminToken = objectMapper.readTree(forwardedLogin.getResponse().getContentAsString()).path("data").path("token").asText();
+
+        mockMvc.perform(post("/api/auth/login")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.7");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "doctor", "password", "123456"))))
+                .andExpect(status().isOk());
+
+        MvcResult auditResult = mockMvc.perform(get("/api/admin/audit-logs").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode logs = objectMapper.readTree(auditResult.getResponse().getContentAsString()).path("data");
+        assertThat(hasLoginIp(logs, "admin", "203.0.113.9")).isTrue();
+        assertThat(hasLoginIp(logs, "doctor", "198.51.100.7")).isTrue();
+    }
+
+    @Test
+    void emailCodeRegisterAndPasswordResetFlowWorks() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "username", "email_flow_no_code",
+                                "email", "email_flow_no_code@medrisk.local",
+                                "name", "邮箱验证码用户",
+                                "role", "PATIENT",
+                                "password", "123456"))))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/auth/register/code")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("email", "email_flow@medrisk.local"))))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "username", "email_flow",
+                                "email", "email_flow@medrisk.local",
+                                "name", "邮箱验证码用户",
+                                "role", "PATIENT",
+                                "password", "123456",
+                                "emailCode", "123456"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.token").isString());
+
+        mockMvc.perform(post("/api/auth/password/forgot")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("email", "email_flow@medrisk.local"))))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/auth/password/reset")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "email", "email_flow@medrisk.local",
+                                "emailCode", "123456",
+                                "newPassword", "654321"))))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "email_flow", "password", "123456"))))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", "email_flow", "password", "654321"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void auditLogsIncludeClientIpForBusinessOperations() throws Exception {
+        String adminToken = login("admin", "123456");
+        mockMvc.perform(post("/api/admin/users")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .header("X-Forwarded-For", "203.0.113.77")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "username", "ip_audit_user",
+                                "email", "ip_audit_user@medrisk.local",
+                                "name", "IP 审计用户",
+                                "phone", "13800000000",
+                                "role", "PATIENT",
+                                "status", "ACTIVE",
+                                "password", "123456"))))
+                .andExpect(status().isOk());
+
+        MvcResult auditResult = mockMvc.perform(get("/api/admin/audit-logs").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode logs = objectMapper.readTree(auditResult.getResponse().getContentAsString()).path("data");
+        assertThat(hasActionIp(logs, "CREATE_USER", "203.0.113.77")).isTrue();
     }
 
     @Test
@@ -149,13 +253,27 @@ class MedRiskApplicationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "datasetId", datasetId,
+                                "evaluationDatasetId", datasetId,
                                 "modelName", "XGBoost 单元测试模型",
                                 "epochs", 3,
                                 "learningRate", 0.1,
-                                "testSize", 0.25))))
+                                "testSize", 0.25,
+                                "hyperparameters", Map.of(
+                                        "nEstimators", 12,
+                                        "maxDepth", 4,
+                                        "learningRate", 0.12,
+                                        "subsample", 0.85,
+                                        "colsampleBytree", 0.8,
+                                        "regLambda", 1.5,
+                                        "minChildWeight", 2,
+                                        "testSize", 0.25)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.trainStatus").value("训练失败"))
                 .andExpect(jsonPath("$.data.datasetId").value(datasetId))
+                .andExpect(jsonPath("$.data.evaluationDatasetId").value(datasetId))
+                .andExpect(jsonPath("$.data.evaluationDatasetName").value("心脏病训练样例"))
+                .andExpect(jsonPath("$.data.hyperparameters.nEstimators").value(12))
+                .andExpect(jsonPath("$.data.hyperparameters.maxDepth").value(4))
                 .andReturn();
 
         long jobId = objectMapper.readTree(jobResult.getResponse().getContentAsString())
@@ -456,6 +574,31 @@ class MedRiskApplicationTests {
     }
 
     @Test
+    void qaBlocksOutOfScopeQuestionsBeforeExternalModelCall() throws Exception {
+        String patientToken = login("patient", "123456");
+        MvcResult conversationResult = mockMvc.perform(post("/api/conversations")
+                        .header("Authorization", "Bearer " + patientToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("title", "范围测试"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        long conversationId = objectMapper.readTree(conversationResult.getResponse().getContentAsString())
+                .path("data")
+                .path("conversation")
+                .path("id")
+                .asLong();
+
+        mockMvc.perform(multipart("/api/conversations/" + conversationId + "/messages")
+                        .param("question", "帮我写一个股票交易策略")
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.usedModel").value("policy-guard"))
+                .andExpect(jsonPath("$.data.provider").value("medrisk-policy"))
+                .andExpect(jsonPath("$.data.fallbackUsed").value(true))
+                .andExpect(jsonPath("$.data.answer").value(org.hamcrest.Matchers.containsString("本系统仅回答 MedRisk 医疗平台")));
+    }
+
+    @Test
     void dataSeedStatusAndDraftVisibilityAreRoleSeparated() throws Exception {
         String adminToken = login("admin", "123456");
         String doctorToken = login("doctor", "123456");
@@ -601,7 +744,38 @@ class MedRiskApplicationTests {
         return root.path("data").path("token").asText();
     }
 
+    private boolean hasLoginIp(JsonNode logs, String resourceId, String clientIp) {
+        for (JsonNode log : logs) {
+            if ("LOGIN".equals(log.path("action").asText())
+                    && clientIp.equals(log.path("clientIp").asText())
+                    && resourceIdMatches(log.path("resourceId").asText(), resourceId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean resourceIdMatches(String resourceId, String username) {
+        if ("admin".equals(username)) return "1".equals(resourceId);
+        if ("doctor".equals(username)) return "2".equals(resourceId);
+        if ("patient".equals(username)) return "3".equals(resourceId);
+        return false;
+    }
+
+    private boolean hasActionIp(JsonNode logs, String action, String clientIp) {
+        for (JsonNode log : logs) {
+            if (action.equals(log.path("action").asText()) && clientIp.equals(log.path("clientIp").asText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private String register(String username, String email, String name, String role) throws Exception {
+        mockMvc.perform(post("/api/auth/register/code")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("email", email))))
+                .andExpect(status().isOk());
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(Map.of(
@@ -609,7 +783,8 @@ class MedRiskApplicationTests {
                                 "email", email,
                                 "name", name,
                                 "role", role,
-                                "password", "123456"))))
+                                "password", "123456",
+                                "emailCode", "123456"))))
                 .andExpect(status().isOk())
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString()).path("data").path("token").asText();

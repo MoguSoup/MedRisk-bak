@@ -264,13 +264,19 @@ public class AdminService {
     }
 
     private ModelVersionResponse toModelResponse(ModelVersionEntity model) {
+        Map<String, Object> metrics = readMap(model.getMetricsJson());
         return new ModelVersionResponse(
                 model.getId(),
                 model.getDiseaseType(),
                 model.getDiseaseName(),
                 model.getModelName(),
+                model.getModelType() == null || model.getModelType().isBlank() ? "xgboost" : model.getModelType(),
                 model.getVersion(),
-                readMap(model.getMetricsJson()),
+                metrics,
+                readMap(model.getHyperparametersJson()),
+                firstNonBlank(model.getEvaluationDatasetName(), string(metrics.get("evaluationDataset"), null)),
+                firstNonBlank(model.getEvaluationDatasetSource(), string(metrics.get("datasetSource"), null)),
+                firstNonBlank(model.getEvaluationDatasetUrl(), string(metrics.get("datasetUrl"), null)),
                 Boolean.TRUE.equals(model.getActive()),
                 model.getCreatedAt());
     }
@@ -282,6 +288,7 @@ public class AdminService {
                 log.getAction(),
                 log.getResourceType(),
                 log.getResourceId(),
+                log.getClientIp(),
                 log.getDetailJson(),
                 log.getCreatedAt());
     }
@@ -370,6 +377,7 @@ public class AdminService {
         return orderedMap(
                 "diseaseName", model.getDiseaseName(),
                 "modelName", model.getModelName(),
+                "modelType", model.getModelType() == null || model.getModelType().isBlank() ? "xgboost" : model.getModelType(),
                 "version", model.getVersion(),
                 "auc", metrics.get("auc"),
                 "recall", metrics.get("recall"),
@@ -408,6 +416,14 @@ public class AdminService {
 
     private String clean(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String string(Object value, String fallback) {
+        return value == null ? fallback : String.valueOf(value);
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
     }
 
     private Map<String, Object> orderedMap(Object... pairs) {
