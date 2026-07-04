@@ -129,11 +129,11 @@ describe('App', () => {
     ;(wrapper.vm as unknown as { activeView: string }).activeView = 'adminConsole'
     await nextTick()
 
-    expect(document.title).toBe('MedRisk AI - 管理员 - Admin - 管理控制台')
+    expect(document.title).toBe('MedRisk AI 疾病风险预测与智能问答系统 - 管理员 - Admin - 管理控制台')
 
     ;(wrapper.vm as unknown as { activeView: string }).activeView = 'users'
     await nextTick()
-    expect(document.title).toBe('MedRisk AI - 管理员 - Admin - 用户管理')
+    expect(document.title).toBe('MedRisk AI 疾病风险预测与智能问答系统 - 管理员 - Admin - 用户管理')
   })
 
   it('renders admin management content without the horizontal tab bar', async () => {

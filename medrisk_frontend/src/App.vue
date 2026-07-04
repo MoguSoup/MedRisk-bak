@@ -4,7 +4,7 @@
       <HeroThreeScene />
       <div class="login-visual-content">
         <p>MedRisk AI</p>
-        <h1>疾病风险预测与智能辅助诊断系统</h1>
+        <h1>疾病风险预测与智能问答系统</h1>
         <span>融合知识图谱、预测模型与医学问答，支持风险识别、报告生成和临床教学演示。</span>
         <div class="login-feature-list">
           <strong>实时检测</strong>
@@ -21,7 +21,7 @@
         <img class="login-brand-wordmark login-brand-zhuopu" :src="zhuopuLogo" alt="成都环朴科技有限公司" />
       </div>
       <h1>MedRisk AI</h1>
-      <p class="login-subtitle">欢迎使用疾病风险预测平台</p>
+      <p class="login-subtitle">疾病风险预测与智能问答系统</p>
       <el-segmented v-if="authMode !== '重置密码'" v-model="authMode" :options="['登录', '注册']" />
       <p v-else class="reset-mode-title">重置密码</p>
       <el-form label-position="top" class="auth-form">
@@ -1202,6 +1202,8 @@ import hbutWordmark from './assets/brand/hbut-wordmark-cn.png'
 import zhuopuLogo from './assets/brand/zhuopu-logo-circuit-wordmark.png'
 import zhuopuHorizontalLogo from './assets/brand/zhuopu-logo-circuit-horizontal.png'
 
+const PROJECT_NAME = 'MedRisk AI 疾病风险预测与智能问答系统'
+
 type UserInfo = {
   id: number
   username: string
@@ -2032,11 +2034,11 @@ function stopNeo4jHealthPolling() {
 
 function updateDocumentTitle() {
   if (!currentUser.value) {
-    document.title = 'MedRisk AI'
+    document.title = PROJECT_NAME
     return
   }
   const displayName = currentUser.value.name || currentUser.value.username
-  document.title = `MedRisk AI - ${roleText(currentUser.value.role)} - ${displayName} - ${currentTitle.value}`
+  document.title = `${PROJECT_NAME} - ${roleText(currentUser.value.role)} - ${displayName} - ${currentTitle.value}`
 }
 
 function numberField(key: string, label: string, min: number, max: number, hint: string, step = 1): FieldConfig {
