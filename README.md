@@ -2,6 +2,12 @@
 
 MedRisk AI 是面向教学实训展示的智能医疗风险预测平台，支持中文界面、多病种风险预测、风险因素解释、预测历史、管理员模型训练管理和辅助报告生成。系统仅用于教学演示和健康风险提示，不能替代医生诊断。
 
+## 开源发布版本说明
+
+当前仓库按“源代码 + 公开文档 + 小型演示数据”准备开源发布。真实运行版本部署在 `med_tencent:/home/med/MedRisk`，但远端目录包含运行态文件和历史同步痕迹，不应直接原样打包发布。发布前请以本地 git 工作区为准，按 [开源发布清单](docs/开源发布清单.md) 核对包含/排除范围。
+
+个人工作日志、实习报告、报告截图、AI 工具使用记录和自动化协作记录不属于公开仓库内容，应保留在 gitignored 的 `final_ret/`、`local_notes/`、`.agents/` 或本机私有目录。真实 `.env`、SMTP 授权码、LLM API Key、Hugging Face token、训练模型产物和受控数据集也不得进入公开提交。
+
 ## 技术栈
 
 - 前端：Vue 3、Vite、TypeScript、Element Plus、ECharts、Three.js、3d-force-graph
@@ -68,7 +74,7 @@ docker compose up --build
 默认访问：
 
 - 本地脚本前端：以 `scripts/start-all.ps1` 输出为准，通常为 `http://localhost:5173`，本机 5173 被系统保留时为 `http://localhost:5241`
-- Docker Compose 前端：`http://localhost:${FRONTEND_PORT:-5241}`，页面内 `/api` 由 Nginx 代理到后端容器
+- Docker Compose 前端：`http://localhost:${FRONTEND_PORT:-5241}`；远端 `med_tencent` 的宿主机 Nginx 监听 80 并代理到该端口，页面内 `/api` 由 Nginx 代理到后端容器
 - 后端健康检查：`http://localhost:8080/api/health`
 - 模型服务健康检查：`http://localhost:8090/health`
 - Docker Compose Neo4j Browser/Bolt 默认只绑定服务器本机 `127.0.0.1:7474/7687`，供排障使用；公网访问只暴露前端端口。
@@ -85,7 +91,7 @@ docker compose up --build
 
 为保证合作者拉取私有仓库后可以直接演示，仓库允许提交根目录 `data/` 下的小型教学数据：`medrisk_sample.csv`、`medrisk_demo_cases.csv`、`medrisk_batch_template.csv` 和数据说明文件。登录账号、基础疾病和演示知识库由后端启动时幂等 seed，不需要提交本机 H2 数据库。
 
-以下内容仍保持忽略：`medrisk_backend/data/*.db`、`uploads/`、`logs/`、大体量 `data/raw/` 与 `data/processed/*.csv`、模型二进制产物。大型公开数据集请通过 `scripts/prepare-large-datasets.ps1` 重新生成，或按团队约定使用对象存储/Git LFS。生成后的 `manifest.json` 可由管理员在“数据集管理”点击“导入公开训练数据集”注册到平台；Docker Compose 默认读取 `MEDRISK_PUBLIC_DATASET_DIR=/shared/data/processed`。
+以下内容仍保持忽略：`medrisk_backend/data/*.db`、`uploads/`、`logs/`、大体量 `data/raw/` 与 `data/processed/*.csv`、模型二进制产物。大型公开数据集请通过 `scripts/prepare-large-datasets.ps1` 重新生成，或按团队约定使用对象存储/Git LFS。生成后的 `manifest.json` 可由管理员在“数据集管理”点击“导入公开训练数据集”注册到平台；Docker Compose 默认读取 `MEDRISK_PUBLIC_DATASET_DIR=/shared/data/processed`。MIMIC-IV 属于受控数据，脚本只读取本机已授权目录 `MEDRISK_MIMIC_IV_DIR`，不会把原始数据或凭据提交到仓库。
 
 ## 核心功能
 
@@ -95,15 +101,15 @@ docker compose up --build
 - 预测历史、报告预览、PDF 下载
 - 智能问答替换旧 AI 辅助分析，支持会话列表、多轮问答、日常聊天/医学问答双模式、可选图片上传、可选图片输出、疾病/病历/图谱上下文引用，并展示模型来源、提供方、兜底状态和证据来源；缺少 LLM API Key 或外部接口不可用时返回可演示的知识库兜底答案，医学问答中的平台外问题由 `policy-guard` 拦截且不调用外部模型
 - 文档管理支持 `txt/pdf/docx` 上传、内容抽取、摘要、来源元数据、可见性标识、下载和图谱构建状态
-- 中等演示数据包会幂等补齐约 50 个疾病、100 篇知识文档、50 个合成病历、5 组以上训练/评估数据集，并可由管理员重建图谱
+- 中等演示数据包会幂等补齐约 50 个疾病、100 篇知识文档和 50 个合成病历，并可由管理员重建图谱；训练数据集不再使用 36 行小样本 seed，改由公开大数据脚本、MIMIC-IV 本地预处理或管理员上传导入
 - 图谱管理支持 Neo4j 健康检查、全量重建、增量构建、单文档同步、任务历史、实体搜索和可视化数据；管理员登录后会持续刷新 Neo4j 状态，切换页面不会丢失连接状态
 - 图谱构建使用离线医学实体、文本单元、关键词和观点抽取规则，单篇非空文档会生成至少 50 个文档相关节点，增量构建会同时处理未构建和上次失败的文档
 - 风险大屏使用 ECharts 平面动态图表展示风险等级、病种分布、近 7 天趋势和模型指标，保持深蓝医疗数据大屏布局
 - 图谱可视化使用 3d-force-graph 的成熟 Three.js 力导向布局，支持节点文字标签、关键词、节点类型、关系类型、来源、可见性和布局切换，并提高默认展示规模以便查看批量构建结果
 - 疾病信息与病历管理支持管理员维护、医生提交草稿、图片上传、来源标识和医生/管理员分级检索；患者端不直接浏览知识库管理页，仅通过智能问答使用检索结果
 - 管理后台模型版本、数据集管理、训练任务、训练曲线、模型评估、模型反馈和审计日志；审计日志会记录所有 HTTP 操作来源 IP，优先读取 `X-Forwarded-For`、`X-Real-IP` 和请求远端地址。`V7` 迁移会清空旧审计日志，后续日志按新规则重新写入
-- 默认预测模型登记为已部署的 XGBoost 公开数据评估基线：糖尿病和中风参考 CDC BRFSS 2024 派生数据，肝病参考 CDC NHANES 2017-March 2020 派生数据，心脏病与慢性肾病同时支持 UCI Heart Disease / UCI Chronic Kidney Disease 公开数据评估导入；管理员模型版本页会显示评估数据集、样本量和来源。
-- 管理员训练成功并启用模型后，对应病种预测优先使用训练模型；启用结果会写入 `MEDRISK_ACTIVE_MODELS_FILE`，Docker Compose 默认持久化到 `/shared/models/training/active-models.json`，模型服务重启后继续加载。训练模型类型支持 `xgboost` 基线，以及可选高级依赖安装后的 `tabpfn`、`tabicl`。训练表单会按模型类型显示不同超参数：XGBoost 使用树数量、深度、学习率、采样和正则项；TabPFN 使用最大训练样本、设备和集成规模；TabICL 使用上下文大小、最大训练样本、设备和随机种子。
+- 默认预测模型登记为已部署的 XGBoost 公开数据评估基线：糖尿病、心脏病、慢性肾病和中风参考 CDC BRFSS 2024 派生数据，肝病参考 CDC NHANES 2017-March 2020 派生数据；脚本可在本地存在授权 MIMIC-IV v3.1 原始目录时额外生成 MIMIC-IV 五病种训练/评估集。管理员模型版本页会显示评估数据集、样本量和来源。
+- 管理员训练成功并启用模型后，对应病种预测优先使用训练模型；启用结果会写入 `MEDRISK_ACTIVE_MODELS_FILE`，Docker Compose 默认持久化到 `/shared/models/training/active-models.json`，模型服务重启后继续加载。训练模型类型默认支持 scikit-learn 基线、`xgboost`、`lightgbm`、`catboost`、`tabpfn`，并保留 `tabicl` 可选能力入口。训练表单会按模型类型显示不同超参数：XGBoost/LightGBM 使用树数量、深度、学习率、采样和正则项；CatBoost 使用迭代轮数、深度、学习率和正则项；TabPFN 默认使用 v2 权重路径，使用最大训练样本、设备和集成规模；TabICL 使用上下文大小、最大训练样本、设备和随机种子。
 - 全站中文界面，集成湖北工业大学校徽与琢朴 logo
 
 ## 角色权限与演示数据
@@ -111,7 +117,7 @@ docker compose up --build
 - 患者只显示疾病预测、个人历史、报告和智能问答；不能看到文档管理、疾病信息、病历管理、图谱管理、数据集、用户管理或管理员数据导入入口。个人资料通过顶部头像进入“个人信息”。
 - 医生可以查看公开和医生专用知识、脱敏完整病历、只读图谱可视化，并可提交文档、疾病和病历草稿；不能发布公共知识库、删除内容或触发全量重建。
 - 管理员拥有数据源/演示数据包导入、发布编辑删除、数据集、图谱构建、全量重建、用户管理和审计能力。
-- 演示数据来自公开来源元数据和本地合成内容：MedlinePlus、Disease Ontology、HPO、UCI、NHANES、openFDA 链接型知识，以及 Synthea 风格合成病历。所有病历均标注为合成数据，非真实患者。
+- 演示数据来自公开来源元数据和本地合成内容：MedlinePlus、Disease Ontology、HPO、openFDA 链接型知识，以及 Synthea 风格合成病历。训练/评估数据请通过公开大数据脚本、授权 MIMIC-IV 本地目录或管理员上传提供；所有病历均标注为合成数据，非真实患者。
 
 ## 测试
 

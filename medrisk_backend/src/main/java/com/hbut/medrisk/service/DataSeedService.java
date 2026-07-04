@@ -1,20 +1,24 @@
 package com.hbut.medrisk.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hbut.medrisk.entity.DataSeedRunEntity;
 import com.hbut.medrisk.entity.DiseaseInfoEntity;
 import com.hbut.medrisk.entity.KnowledgeDocumentEntity;
 import com.hbut.medrisk.entity.MedicalCaseEntity;
+import com.hbut.medrisk.entity.ModelEvaluationEntity;
+import com.hbut.medrisk.entity.ModelFeedbackEntity;
+import com.hbut.medrisk.entity.ModelTrainingJobEntity;
 import com.hbut.medrisk.entity.TrainingDatasetEntity;
 import com.hbut.medrisk.entity.UserEntity;
 import com.hbut.medrisk.repository.DataSeedRunRepository;
 import com.hbut.medrisk.repository.DiseaseInfoRepository;
 import com.hbut.medrisk.repository.KnowledgeDocumentRepository;
 import com.hbut.medrisk.repository.MedicalCaseRepository;
+import com.hbut.medrisk.repository.ModelEvaluationRepository;
+import com.hbut.medrisk.repository.ModelFeedbackRepository;
+import com.hbut.medrisk.repository.ModelTrainingJobRepository;
 import com.hbut.medrisk.repository.TrainingDatasetRepository;
 import com.hbut.medrisk.repository.UserRepository;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -23,7 +27,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,8 +39,6 @@ public class DataSeedService {
     private static final String SOURCE_DEMO = "MedRisk Demo Seed Pack";
     private static final String SOURCE_SYNTHEA = "Synthea Synthetic Patient Generator";
     private static final String SOURCE_MEDLINE = "MedlinePlus Health Topics";
-    private static final String SOURCE_UCI = "UCI Machine Learning Repository";
-    private static final String SOURCE_NHANES = "CDC NHANES";
     private static final String SOURCE_DO_HPO = "Disease Ontology / HPO";
     private static final LocalDateTime RETRIEVED_AT = LocalDate.of(2026, 6, 26).atStartOfDay();
 
@@ -45,11 +46,13 @@ public class DataSeedService {
     private final KnowledgeDocumentRepository documents;
     private final MedicalCaseRepository medicalCases;
     private final TrainingDatasetRepository datasets;
+    private final ModelTrainingJobRepository trainingJobs;
+    private final ModelEvaluationRepository evaluations;
+    private final ModelFeedbackRepository feedbacks;
     private final DataSeedRunRepository runs;
     private final UserRepository users;
     private final FileStorageService files;
     private final KnowledgeGraphService graphService;
-    private final ObjectMapper objectMapper;
     private final Path uploadRoot;
 
     public DataSeedService(
@@ -57,29 +60,33 @@ public class DataSeedService {
             KnowledgeDocumentRepository documents,
             MedicalCaseRepository medicalCases,
             TrainingDatasetRepository datasets,
+            ModelTrainingJobRepository trainingJobs,
+            ModelEvaluationRepository evaluations,
+            ModelFeedbackRepository feedbacks,
             DataSeedRunRepository runs,
             UserRepository users,
             FileStorageService files,
             KnowledgeGraphService graphService,
-            ObjectMapper objectMapper,
             @Value("${medrisk.upload-dir}") String uploadDir) {
         this.diseases = diseases;
         this.documents = documents;
         this.medicalCases = medicalCases;
         this.datasets = datasets;
+        this.trainingJobs = trainingJobs;
+        this.evaluations = evaluations;
+        this.feedbacks = feedbacks;
         this.runs = runs;
         this.users = users;
         this.files = files;
         this.graphService = graphService;
-        this.objectMapper = objectMapper;
         this.uploadRoot = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
     public void ensureDemoPack() {
+        pruneLegacySmallDatasets();
         if (diseases.countBySourceName(SOURCE_DEMO) >= 50
                 && documents.countBySourceName(SOURCE_MEDLINE) >= 100
-                && medicalCases.countBySourceName(SOURCE_SYNTHEA) >= 50
-                && datasets.countBySourceName(SOURCE_UCI) + datasets.countBySourceName(SOURCE_NHANES) >= 5) {
+                && medicalCases.countBySourceName(SOURCE_SYNTHEA) >= 50) {
             return;
         }
         UserEntity user = users.findByUsername("admin").orElse(null);
@@ -101,6 +108,7 @@ public class DataSeedService {
         ImportCounters counters = new ImportCounters();
         StringBuilder message = new StringBuilder();
         try {
+            pruneLegacySmallDatasets();
             List<DiseaseSeed> seedDiseases = diseaseSeeds();
             for (DiseaseSeed seed : seedDiseases) {
                 DiseaseInfoEntity disease = upsertDisease(seed, user);
@@ -109,7 +117,6 @@ public class DataSeedService {
                 upsertMedicalCase(seed, disease, user);
                 counters.cases++;
             }
-            seedDatasets(user, counters);
             if (includeGraph) {
                 try {
                     KnowledgeGraphStore.GraphWriteResult result = writeStructuredGraph(seedDiseases);
@@ -140,26 +147,28 @@ public class DataSeedService {
     }
 
     public Map<String, Object> status() {
+        int diseaseTarget = diseaseSeeds().size();
+        int documentTarget = diseaseTarget * 2;
+        int caseTarget = diseaseTarget;
+        int datasetTarget = 0;
         return orderedMap(
                 "seedKey", DEMO_SEED_KEY,
                 "targets", orderedMap(
-                        "diseases", 50,
-                        "documents", 100,
-                        "medicalCases", 50,
-                        "datasets", 6,
+                        "diseases", diseaseTarget,
+                        "documents", documentTarget,
+                        "medicalCases", caseTarget,
+                        "datasets", datasetTarget,
                         "graphRelationships", 800),
                 "counts", orderedMap(
                         "diseases", diseases.countBySourceName(SOURCE_DEMO),
                         "documents", documents.countBySourceName(SOURCE_MEDLINE),
                         "medicalCases", medicalCases.countBySourceName(SOURCE_SYNTHEA),
-                        "datasets", datasets.countBySourceName(SOURCE_UCI) + datasets.countBySourceName(SOURCE_NHANES)),
+                        "datasets", datasetTarget == 0 ? 0 : datasets.countBySourceName(SOURCE_DEMO)),
                 "sources", List.of(
                         source("MedlinePlus Health Topics", "https://medlineplus.gov/xml.html", "Use permitted with attribution"),
                         source("Synthea", "https://github.com/synthetichealth/synthea", "Apache-2.0"),
                         source("Disease Ontology", "https://obofoundry.org/ontology/doid.html", "CC0 1.0"),
                         source("HPO", "https://human-phenotype-ontology.github.io/downloads.html", "Open ontology data"),
-                        source("UCI Heart/CKD datasets", "https://archive.ics.uci.edu/", "Dataset-specific licenses"),
-                        source("CDC NHANES", "https://www.cdc.gov/nchs/hus/sources-definitions/nhanes.htm", "Public health data"),
                         source("openFDA Drug Label", "https://open.fda.gov/apis/drug/label/", "FDA public data")),
                 "lastRun", runs.findFirstBySeedKeyOrderByStartedAtDesc(DEMO_SEED_KEY).map(this::toRunMap).orElse(null),
                 "recentRuns", runs.findTop20ByOrderByStartedAtDesc().stream().map(this::toRunMap).toList());
@@ -274,49 +283,51 @@ public class DataSeedService {
         medicalCases.save(row);
     }
 
-    private void seedDatasets(UserEntity user, ImportCounters counters) throws IOException {
-        seedDataset(user, counters, "heart", "心脏病 UCI 教学数据集", SOURCE_UCI,
-                "https://archive.ics.uci.edu/dataset/45/heart%2Bdisease", "UCI dataset license / citation required");
-        seedDataset(user, counters, "kidney", "慢性肾病 UCI 教学数据集", SOURCE_UCI,
-                "https://archive.ics.uci.edu/dataset/336/chronic%2Bkidney%2Bdisease", "CC BY 4.0");
-        seedDataset(user, counters, "diabetes", "糖尿病 NHANES 派生教学数据集", SOURCE_NHANES,
-                "https://www.cdc.gov/nchs/hus/sources-definitions/nhanes.htm", "Public health data");
-        seedDataset(user, counters, "liver", "肝病 NHANES 派生教学数据集", SOURCE_NHANES,
-                "https://www.cdc.gov/nchs/hus/sources-definitions/nhanes.htm", "Public health data");
-        seedDataset(user, counters, "stroke", "卒中风险 NHANES 派生教学数据集", SOURCE_NHANES,
-                "https://www.cdc.gov/nchs/hus/sources-definitions/nhanes.htm", "Public health data");
-        seedDataset(user, counters, "hypertension", "高血压风险 NHANES 派生教学数据集", SOURCE_NHANES,
-                "https://www.cdc.gov/nchs/hus/sources-definitions/nhanes.htm", "Public health data");
+    private void pruneLegacySmallDatasets() {
+        List<TrainingDatasetEntity> rows = datasets.findTop200ByOrderByCreatedAtDesc().stream()
+                .filter(this::isLegacySmallSeedDataset)
+                .toList();
+        for (TrainingDatasetEntity row : rows) {
+            List<ModelEvaluationEntity> linkedEvaluations = evaluations.findByDatasetId(row.getId());
+            List<Long> evaluationIds = linkedEvaluations.stream().map(ModelEvaluationEntity::getId).toList();
+            List<ModelFeedbackEntity> linkedFeedback = evaluationIds.isEmpty() ? List.of() : feedbacks.findByEvaluationIdIn(evaluationIds);
+            if (!linkedFeedback.isEmpty()) {
+                feedbacks.deleteAll(linkedFeedback);
+            }
+            if (!linkedEvaluations.isEmpty()) {
+                evaluations.deleteAll(linkedEvaluations);
+            }
+            List<ModelTrainingJobEntity> linkedJobs = trainingJobs.findByDatasetIdOrEvaluationDatasetId(row.getId(), row.getId());
+            if (!linkedJobs.isEmpty()) {
+                trainingJobs.deleteAll(linkedJobs);
+            }
+            deleteSeedDatasetFile(row);
+            datasets.delete(row);
+        }
     }
 
-    private void seedDataset(UserEntity user, ImportCounters counters, String diseaseType, String name, String sourceName, String sourceUrl, String license) throws IOException {
-        String sourceRecordId = "medrisk-demo:dataset:" + diseaseType;
-        TrainingDatasetEntity row = datasets.findBySourceRecordId(sourceRecordId).orElseGet(TrainingDatasetEntity::new);
-        Path dir = uploadRoot.resolve("datasets").resolve("seed").normalize();
-        Files.createDirectories(dir);
-        Path path = dir.resolve(diseaseType + "-demo.csv").normalize();
-        Files.writeString(path, demoCsv(diseaseType), StandardCharsets.UTF_8);
-        row.setName(name);
-        row.setDiseaseType(diseaseType);
-        row.setDescription("公开数据源结构启发的教学演示 CSV，已统一为 label 监督学习格式。");
-        row.setFileName(path.getFileName().toString());
-        row.setFilePath(path.toString());
-        row.setFileType("csv");
-        row.setStatus("VALID");
-        row.setSampleCount(36);
-        row.setFeatureColumns(objectMapper.writeValueAsString(List.of("age", "bmi", "glucose", "bloodPressure", "cholesterol", "smoker", "symptomScore")));
-        row.setValidationMessage("演示数据已通过种子校验");
-        row.setUploadedBy(user == null ? 1L : user.getId());
-        row.setSourceName(sourceName);
-        row.setSourceUrl(sourceUrl);
-        row.setSourceLicense(license);
-        row.setSourceRecordId(sourceRecordId);
-        row.setRetrievedAt(RETRIEVED_AT);
-        row.setVisibility("ADMIN_ONLY");
-        if (row.getCreatedAt() == null) row.setCreatedAt(LocalDateTime.now());
-        row.setUpdatedAt(LocalDateTime.now());
-        datasets.save(row);
-        counters.datasets++;
+    private boolean isLegacySmallSeedDataset(TrainingDatasetEntity row) {
+        String sourceRecordId = row.getSourceRecordId() == null ? "" : row.getSourceRecordId();
+        if (!sourceRecordId.startsWith("medrisk-demo:dataset:")) {
+            return false;
+        }
+        int sampleCount = row.getSampleCount() == null ? 0 : row.getSampleCount();
+        return sampleCount < 1000;
+    }
+
+    private void deleteSeedDatasetFile(TrainingDatasetEntity row) {
+        String filePath = row.getFilePath();
+        if (filePath == null || filePath.isBlank()) {
+            return;
+        }
+        Path path = Path.of(filePath).toAbsolutePath().normalize();
+        Path seedRoot = uploadRoot.resolve("datasets").resolve("seed").toAbsolutePath().normalize();
+        try {
+            if (path.startsWith(seedRoot)) {
+                Files.deleteIfExists(path);
+            }
+        } catch (IOException ignored) {
+        }
     }
 
     private KnowledgeGraphStore.GraphWriteResult writeStructuredGraph(List<DiseaseSeed> seedDiseases) {
@@ -400,29 +411,6 @@ public class DataSeedService {
                 图谱来源：%s
                 """.formatted(seed.name(), seed.englishName(), seed.code(), seed.category(), seed.department(), seed.bodyPart(),
                 seed.pathogen(), seed.symptoms(), seed.riskFactors(), seed.exams(), seed.treatment(), seed.prognosis(), seed.sourceUrl());
-    }
-
-    private String demoCsv(String diseaseType) {
-        StringBuilder csv = new StringBuilder("age,bmi,glucose,bloodPressure,cholesterol,smoker,symptomScore,label\n");
-        int offset = Math.abs(diseaseType.hashCode()) % 9;
-        for (int i = 0; i < 36; i++) {
-            int age = 32 + i + offset;
-            double bmi = 21.5 + (i % 9) * 1.2;
-            double glucose = 4.8 + (i % 7) * 0.7 + (i > 18 ? 1.2 : 0);
-            int bloodPressure = 110 + (i % 12) * 4 + (i > 20 ? 14 : 0);
-            double cholesterol = 4.2 + (i % 8) * 0.35 + (i > 22 ? 0.8 : 0);
-            int smoker = i % 4 == 0 ? 1 : 0;
-            int symptomScore = (i % 6) + (i > 20 ? 3 : 0);
-            int label = age > 55 || glucose > 8.0 || bloodPressure > 150 || symptomScore > 7 ? 1 : 0;
-            csv.append(age).append(',').append(round(bmi)).append(',').append(round(glucose)).append(',')
-                    .append(bloodPressure).append(',').append(round(cholesterol)).append(',')
-                    .append(smoker).append(',').append(symptomScore).append(',').append(label).append('\n');
-        }
-        return csv.toString();
-    }
-
-    private String round(double value) {
-        return String.format(Locale.ROOT, "%.2f", value);
     }
 
     private List<DiseaseSeed> diseaseSeeds() {

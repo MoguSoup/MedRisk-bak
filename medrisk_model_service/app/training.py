@@ -38,6 +38,9 @@ STATUS_RUNNING = "训练中"
 STATUS_SUCCESS = "训练成功"
 STATUS_FAILED = "训练失败"
 STATUS_STOP = "训练终止"
+MAX_METRIC_CURVE_POINTS = 400
+TASK_RETENTION_SECONDS = int(os.getenv("MEDRISK_TASK_RETENTION_SECONDS", "7200"))
+MAX_TASK_CACHE = int(os.getenv("MEDRISK_TASK_CACHE_LIMIT", "200"))
 
 
 @dataclass
@@ -56,6 +59,7 @@ class TrainingTask:
     metrics: dict[str, Any] | None = None
     history: dict[str, list[float]] = field(default_factory=dict)
     stop_requested: bool = False
+    completed_at: float | None = None
 
 
 class StopTraining(Exception):
@@ -85,6 +89,7 @@ class TrainingManager:
 
     def start(self, request: Any) -> TrainingTask:
         with self._lock:
+            self._purge_finished_locked()
             model_type = normalize_model_type(getattr(request, "modelType", None))
             hyperparameters = normalize_hyperparameters(model_type, getattr(request, "hyperparameters", {}) or {}, request)
             task = TrainingTask(
@@ -104,6 +109,7 @@ class TrainingManager:
         if task.status in {STATUS_PREPARE, STATUS_RUNNING}:
             task.status = STATUS_STOP
             task.progress = min(task.progress, 99)
+            task.completed_at = time.time()
         return task
 
     def get(self, task_id: str) -> TrainingTask:
@@ -162,6 +168,7 @@ class TrainingManager:
                 "disease_type": request.diseaseType,
                 "hyperparameters": hyperparameters,
             }
+            bundle["decision_threshold"] = select_decision_threshold(bundle, X_test, y_test)
             if getattr(request, "evaluationDatasetPath", None):
                 eval_df = read_dataset(Path(request.evaluationDatasetPath))
                 X_eval, y_eval = split_features_label(eval_df)
@@ -169,6 +176,9 @@ class TrainingManager:
                 metrics.update(evaluation_metadata(request, len(eval_df)))
             else:
                 metrics, predictions = evaluate_bundle(bundle, X_test, y_test)
+            training_note = getattr(adapter, "training_note", None)
+            if training_note:
+                metrics["trainingNote"] = training_note
             version = f"{request.diseaseType}-{model_type}-{slugify(request.modelName)}-{int(time.time())}"
             output_dir = Path(request.outputDir) if request.outputDir else default_output_root() / version
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,6 +200,7 @@ class TrainingManager:
                 "evaluationDatasetUrl": getattr(request, "evaluationDatasetUrl", None),
                 "evaluationDatasetLicense": getattr(request, "evaluationDatasetLicense", None),
                 "evaluationSampleCount": getattr(request, "evaluationSampleCount", None),
+                "trainingNote": training_note,
                 "metrics": metrics,
                 "features": list(X.columns),
                 "labelMap": {str(key): value for key, value in label_map.items()},
@@ -205,17 +216,76 @@ class TrainingManager:
             task.metadata_path = str(metadata_path)
             task.metrics = metrics
             task.history = history
-            task.message = "训练完成"
+            task.message = training_note or "训练完成"
+            self._mark_finished(task)
         except StopTraining:
             task.status = STATUS_STOP
             task.message = "训练已终止"
+            self._mark_finished(task)
         except Exception as exc:
             task.status = STATUS_FAILED
             task.message = str(exc)
             task.progress = max(task.progress, 1)
+            self._mark_finished(task)
 
     def _load_task_from_disk(self, task_id: str) -> TrainingTask:
-        return TrainingTask(task_id=task_id, status=STATUS_FAILED, progress=0, message="任务不存在或服务已重启")
+        output_dir = default_output_root() / f"job-{task_id}"
+        model_path = output_dir / "model.joblib"
+        history_path = output_dir / "history.json"
+        metadata_path = output_dir / "metadata.json"
+        if not model_path.exists() or not metadata_path.exists():
+            return TrainingTask(task_id=task_id, status=STATUS_FAILED, progress=0, message="任务不存在或服务已重启")
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            metadata = {}
+        try:
+            history = json.loads(history_path.read_text(encoding="utf-8")) if history_path.exists() else {}
+        except Exception:
+            history = {}
+        return TrainingTask(
+            task_id=task_id,
+            status=STATUS_SUCCESS,
+            progress=100,
+            current_loss=last_loss(history),
+            message=str(metadata.get("trainingNote") or "训练完成"),
+            model_version=str(metadata.get("version") or output_dir.name),
+            model_path=str(model_path),
+            history_path=str(history_path) if history_path.exists() else None,
+            metadata_path=str(metadata_path),
+            model_type=str(metadata.get("modelType") or ""),
+            hyperparameters=metadata.get("hyperparameters") or {},
+            metrics=metadata.get("metrics") or {},
+            history=history,
+            completed_at=time.time(),
+        )
+
+    def _mark_finished(self, task: TrainingTask) -> None:
+        task.completed_at = time.time()
+        with self._lock:
+            self._purge_finished_locked(exclude=task.task_id)
+
+    def _purge_finished_locked(self, exclude: str | None = None) -> None:
+        now = time.time()
+        terminal = [
+            (task_id, task)
+            for task_id, task in self._tasks.items()
+            if task_id != exclude and task.status in {STATUS_SUCCESS, STATUS_FAILED, STATUS_STOP}
+        ]
+        for task_id, task in terminal:
+            if task.completed_at is not None and now - task.completed_at > TASK_RETENTION_SECONDS:
+                self._tasks.pop(task_id, None)
+        if len(self._tasks) <= MAX_TASK_CACHE:
+            return
+        terminal = [
+            (task_id, task)
+            for task_id, task in self._tasks.items()
+            if task_id != exclude and task.status in {STATUS_SUCCESS, STATUS_FAILED, STATUS_STOP}
+        ]
+        terminal.sort(key=lambda item: item[1].completed_at or 0)
+        overflow = len(self._tasks) - MAX_TASK_CACHE
+        for task_id, _ in terminal[:overflow]:
+            self._tasks.pop(task_id, None)
 
 
 def default_output_root() -> Path:
@@ -260,9 +330,16 @@ def normalize_hyperparameters(model_type: str, payload: dict[str, Any], request:
         }
     if model_type == "tabpfn":
         return {
-            "maxTrainSamples": int_value(payload.get("maxTrainSamples"), 10000),
+            "maxTrainSamples": int_value(payload.get("maxTrainSamples"), 2048),
             "device": str(payload.get("device") or "auto"),
             "ensembleSize": int_value(payload.get("ensembleSize"), 8),
+            "version": str(payload.get("version") or "v2"),
+            "useOnlineWeights": bool_value(payload.get("useOnlineWeights", payload.get("onlineWeights")), False),
+            "fallbackMaxIterations": int_value(payload.get("fallbackMaxIterations"), 120),
+            "fallbackMaxDepth": int_value(payload.get("fallbackMaxDepth"), 4),
+            "fallbackLearningRate": float_value(payload.get("fallbackLearningRate"), 0.05),
+            "fallbackRegLambda": float_value(payload.get("fallbackRegLambda"), 0.0),
+            "seed": int_value(payload.get("seed"), 42),
             "testSize": float_value(payload.get("testSize"), getattr(request, "testSize", 0.2)),
         }
     if model_type == "tabicl":
@@ -306,6 +383,14 @@ def float_value(value: Any, fallback: float) -> float:
         return float(value)
     except Exception:
         return float(fallback)
+
+
+def bool_value(value: Any, fallback: bool) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def evaluation_metadata(request: Any, sample_count: int) -> dict[str, Any]:
@@ -388,7 +473,8 @@ def evaluate_bundle(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> tu
         model = bundle["model"]
         probabilities = model.predict_proba(encoded)[:, 1]
     probabilities = np.asarray(probabilities, dtype=float)
-    predicted = (probabilities >= 0.5).astype(int)
+    threshold = float(bundle.get("decision_threshold", 0.5) or 0.5)
+    predicted = (probabilities >= threshold).astype(int)
     matrix = confusion_matrix(y_encoded, predicted, labels=[0, 1])
     tn, fp, fn, tp = matrix.ravel()
     specificity = tn / (tn + fp) if (tn + fp) else 0.0
@@ -414,9 +500,14 @@ def evaluate_bundle(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> tu
         "logLoss": round(float(log_loss(y_encoded, probabilities, labels=[0, 1])), 4),
         "brierScore": round(float(brier_score_loss(y_encoded, probabilities)), 4),
         "confusionMatrix": matrix.tolist(),
+        "decisionThreshold": round(float(threshold), 4),
         "sampleCount": int(len(y_encoded)),
         "positiveCount": int(sum(y_encoded)),
         "negativeCount": int(len(y_encoded) - sum(y_encoded)),
+        "predictedPositiveCount": int(sum(predicted)),
+        "predictedNegativeCount": int(len(predicted) - sum(predicted)),
+        "positivePredictionRate": round(float(sum(predicted) / len(predicted)) if len(predicted) else 0.0, 4),
+        "prevalence": round(float(sum(y_encoded) / len(y_encoded)) if len(y_encoded) else 0.0, 4),
         "rocCurve": curve_rows(fpr, tpr, roc_thresholds, "fpr", "tpr"),
         "prCurve": curve_rows(recall_curve, precision_curve, pr_thresholds, "recall", "precision"),
         "calibrationCurve": curve_rows(calibration_prob_pred, calibration_prob_true, None, "predicted", "observed"),
@@ -433,10 +524,55 @@ def evaluate_bundle(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> tu
     return metrics, predictions
 
 
+def select_decision_threshold(bundle: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> float:
+    try:
+        encoded, _ = encode_features(X, bundle["feature_columns"])
+        label_map = bundle["label_map"]
+        y_encoded = y.map(label_map)
+        if y_encoded.isna().any() or len(set(y_encoded.dropna().astype(int))) < 2:
+            return 0.5
+        y_encoded = y_encoded.astype(int)
+        probabilities = np.asarray(model_probabilities(bundle, encoded)[:, 1], dtype=float)
+        candidates = np.unique(np.clip(probabilities, 0.0, 1.0))
+        if len(candidates) > 250:
+            candidates = np.quantile(candidates, np.linspace(0.02, 0.98, 250))
+        candidates = np.unique(np.concatenate([candidates, np.array([0.5])]))
+        best_threshold = 0.5
+        best_score = (-1.0, -1.0, -1.0, 0.0)
+        for threshold in candidates:
+            predicted = (probabilities >= threshold).astype(int)
+            if predicted.sum() == 0:
+                continue
+            f1 = float(f1_score(y_encoded, predicted, zero_division=0))
+            recall = float(recall_score(y_encoded, predicted, zero_division=0))
+            precision = float(precision_score(y_encoded, predicted, zero_division=0))
+            balanced = float(balanced_accuracy_score(y_encoded, predicted))
+            score = (f1, recall, balanced, precision)
+            if score > best_score:
+                best_score = score
+                best_threshold = float(threshold)
+        return round(best_threshold, 4)
+    except Exception:
+        return 0.5
+
+
 def curve_rows(x_values: Any, y_values: Any, thresholds: Any | None, x_key: str, y_key: str) -> list[dict[str, float]]:
     rows: list[dict[str, float]] = []
+    x_list = list(x_values)
+    y_list = list(y_values)
+    count = min(len(x_list), len(y_list))
+    if count == 0:
+        return rows
+    if count <= MAX_METRIC_CURVE_POINTS:
+        indices = range(count)
+    else:
+        indices = sorted(
+            set(np.linspace(0, count - 1, MAX_METRIC_CURVE_POINTS, dtype=int).tolist())
+        )
     threshold_values = list(thresholds) if thresholds is not None else []
-    for index, (x_value, y_value) in enumerate(zip(list(x_values), list(y_values))):
+    for index in indices:
+        x_value = x_list[index]
+        y_value = y_list[index]
         row = {
             x_key: round(float(x_value), 4),
             y_key: round(float(y_value), 4),

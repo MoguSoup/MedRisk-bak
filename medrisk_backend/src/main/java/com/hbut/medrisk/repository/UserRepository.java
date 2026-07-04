@@ -1,6 +1,7 @@
 package com.hbut.medrisk.repository;
 
 import com.hbut.medrisk.entity.UserEntity;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -16,4 +17,10 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     boolean existsByUsernameAndIdNot(String username, Long id);
 
     boolean existsByEmailAndIdNot(String email, Long id);
+
+    long countByRole(String role);
+
+    long countByStatus(String status);
+
+    List<UserEntity> findTop200ByOrderByCreatedAtDesc();
 }

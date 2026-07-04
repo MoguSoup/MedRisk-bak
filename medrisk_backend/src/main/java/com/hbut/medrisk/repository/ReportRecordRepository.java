@@ -9,5 +9,7 @@ public interface ReportRecordRepository extends JpaRepository<ReportRecordEntity
 
     List<ReportRecordEntity> findTop100ByOrderByCreatedAtDesc();
 
+    List<ReportRecordEntity> findByPredictionIdOrderByCreatedAtDesc(Long predictionId);
+
     boolean existsByGeneratedBy(Long generatedBy);
 }

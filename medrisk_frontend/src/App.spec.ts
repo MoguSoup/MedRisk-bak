@@ -65,6 +65,8 @@ describe('App', () => {
     await nextTick()
 
     expect(wrapper.text()).toContain('智能问答')
+    expect(wrapper.text()).toContain('患者风险记录')
+    expect(wrapper.text()).toContain('报告中心')
     expect(wrapper.text()).toContain('文档管理')
     expect(wrapper.text()).toContain('图谱管理')
     expect(wrapper.text()).toContain('图谱可视化')
@@ -201,6 +203,7 @@ describe('App', () => {
     app.activeView = 'datasets'
     await nextTick()
     expect(wrapper.text()).toContain('导入公开训练数据集')
+    expect(wrapper.text()).toContain('清理小样本数据集')
   })
 
   it('renders model-specific hyperparameter controls', async () => {

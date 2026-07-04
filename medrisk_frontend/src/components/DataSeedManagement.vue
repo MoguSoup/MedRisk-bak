@@ -10,21 +10,15 @@
         </div>
       </div>
       <div class="metric-grid compact">
-        <div class="metric-card mini">
-          <span>疾病</span>
-          <strong>{{ counts.diseases || 0 }}/{{ targets.diseases || 50 }}</strong>
-        </div>
-        <div class="metric-card mini teal">
-          <span>文档</span>
-          <strong>{{ counts.documents || 0 }}/{{ targets.documents || 100 }}</strong>
-        </div>
-        <div class="metric-card mini purple">
-          <span>合成病历</span>
-          <strong>{{ counts.medicalCases || 0 }}/{{ targets.medicalCases || 50 }}</strong>
-        </div>
-        <div class="metric-card mini warn">
-          <span>数据集</span>
-          <strong>{{ counts.datasets || 0 }}/{{ targets.datasets || 6 }}</strong>
+        <div
+          v-for="item in metrics"
+          :key="item.key"
+          class="metric-card mini"
+          :class="item.className"
+        >
+          <span>{{ item.label }}</span>
+          <strong>{{ item.count }}</strong>
+          <small>{{ item.status }}</small>
         </div>
       </div>
       <p class="disclaimer">{{ lastRun?.message || '演示数据仅用于教学和 GraphRAG 检索效果展示，不作为真实诊疗知识库。' }}</p>
@@ -69,7 +63,7 @@
 import { ElMessage } from 'element-plus'
 import { Connection, Refresh, Upload } from '@element-plus/icons-vue'
 import { computed, onMounted, ref } from 'vue'
-import { request } from '../api/client'
+import { apiErrorMessage, request } from '../api/client'
 
 type SeedRun = Record<string, any>
 type SeedStatus = {
@@ -87,6 +81,12 @@ const targets = computed(() => status.value.targets || {})
 const sources = computed(() => status.value.sources || [])
 const lastRun = computed(() => status.value.lastRun || null)
 const recentRuns = computed(() => status.value.recentRuns || [])
+const metrics = computed(() => [
+  metric('diseases', '疾病', ''),
+  metric('documents', '文档', 'teal'),
+  metric('medicalCases', '合成病历', 'purple'),
+  metric('datasets', '数据集', 'warn')
+])
 
 onMounted(loadStatus)
 
@@ -95,7 +95,8 @@ async function loadStatus() {
   try {
     status.value = await request<SeedStatus>('get', '/admin/data-seeds/status')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '数据源状态加载失败')
+    const errorMessage = apiErrorMessage(error, '数据源状态加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
@@ -116,9 +117,25 @@ async function runSeed(endpoint: string, message: string) {
     await loadStatus()
     ElMessage.success(message)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '演示数据操作失败')
+    const errorMessage = apiErrorMessage(error, '演示数据操作失败')
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
+}
+
+function metric(key: string, label: string, className: string) {
+  const count = Number(counts.value[key] ?? 0)
+  const target = Number(targets.value[key] ?? 0)
+  const resolvedClassName = target > 0 || count > 0 ? className : ''
+  let status = '未设置目标'
+  if (target > 0) {
+    status = count >= target ? `已达标 / 目标 ${target}` : `待补齐 ${target - count} / 目标 ${target}`
+  } else if (count > 0) {
+    status = '已有数据 / 未设目标'
+  } else {
+    status = '未纳入演示包'
+  }
+  return { key, label, count, target, status, className: resolvedClassName }
 }
 </script>

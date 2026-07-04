@@ -10,4 +10,6 @@ public interface PredictionRecordRepository extends JpaRepository<PredictionReco
     List<PredictionRecordEntity> findTop100ByOrderByCreatedAtDesc();
 
     boolean existsByUserId(Long userId);
+
+    long countByRiskLabel(String riskLabel);
 }

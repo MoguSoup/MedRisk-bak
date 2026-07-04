@@ -46,12 +46,12 @@
 
     <div class="metric-grid compact">
       <div class="metric-card mini">
-        <span>节点</span>
-        <strong>{{ summary.nodeCount || 0 }}</strong>
+        <span>展示节点</span>
+        <strong>{{ summary.displayedNodeCount ?? nodes.length }}</strong>
       </div>
       <div class="metric-card mini teal">
-        <span>关系</span>
-        <strong>{{ summary.relationshipCount || 0 }}</strong>
+        <span>展示关系</span>
+        <strong>{{ summary.displayedRelationshipCount ?? relationships.length }}</strong>
       </div>
       <div class="metric-card mini purple">
         <span>节点类型</span>

@@ -41,12 +41,22 @@ services:
     build:
       context: ./medrisk_model_service
     container_name: medrisk-model-service
+    restart: unless-stopped
+    mem_limit: ${MODEL_SERVICE_MEMORY_LIMIT:-2g}
     ports:
       - "8090:8090"
     environment:
       PYTHONUNBUFFERED: "1"
+      MALLOC_TRIM_THRESHOLD_: "65536"
+      TZ: Asia/Shanghai
       MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
       MEDRISK_ACTIVE_MODELS_FILE: ${MEDRISK_ACTIVE_MODELS_FILE:-/shared/models/training/active-models.json}
+      MEDRISK_TASK_RETENTION_SECONDS: ${MEDRISK_TASK_RETENTION_SECONDS:-7200}
+      MEDRISK_TASK_CACHE_LIMIT: ${MEDRISK_TASK_CACHE_LIMIT:-200}
+      MEDRISK_TABPFN_VERSION: ${MEDRISK_TABPFN_VERSION:-v2}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN:-}
+      TABPFN_TOKEN: ${TABPFN_TOKEN:-}
       MEDRISK_HF_QA_MODEL: ${MEDRISK_HF_QA_MODEL:-}
       MEDRISK_HF_QA_DEVICE: ${MEDRISK_HF_QA_DEVICE:-auto}
       MEDRISK_HF_QA_MAX_NEW_TOKENS: ${MEDRISK_HF_QA_MAX_NEW_TOKENS:-512}
@@ -65,6 +75,8 @@ services:
     build:
       context: ./medrisk_backend
     container_name: medrisk-backend
+    restart: unless-stopped
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-1g}
     depends_on:
       mysql:
         condition: service_healthy
@@ -75,6 +87,8 @@ services:
     ports:
       - "8080:8080"
     environment:
+      TZ: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--Duser.timezone=Asia/Shanghai -XX:+UseG1GC -XX:InitialRAMPercentage=20 -XX:MaxRAMPercentage=55 -XX:MaxGCPauseMillis=200 -XX:+ExitOnOutOfMemoryError}
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://mysql:3306/medrisk?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-medrisk_app}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-ChangeMe_2026!}
@@ -84,7 +98,7 @@ services:
       MEDRISK_UPLOAD_DIR: ${MEDRISK_UPLOAD_DIR:-/shared/uploads}
       MEDRISK_TRAINING_OUTPUT_DIR: ${MEDRISK_TRAINING_OUTPUT_DIR:-/shared/models/training}
       MEDRISK_PUBLIC_DATASET_DIR: ${MEDRISK_PUBLIC_DATASET_DIR:-/shared/data/processed}
-      MEDRISK_NEO4J_URI: ${MEDRISK_NEO4J_URI:-bolt://neo4j:7687}
+      MEDRISK_NEO4J_URI: ${MEDRISK_BACKEND_NEO4J_URI:-bolt://neo4j:7687}
       MEDRISK_NEO4J_USERNAME: ${MEDRISK_NEO4J_USERNAME:-neo4j}
       MEDRISK_NEO4J_PASSWORD: ${MEDRISK_NEO4J_PASSWORD:-medrisk-neo4j}
       MEDRISK_NEO4J_DATABASE: ${MEDRISK_NEO4J_DATABASE:-neo4j}
@@ -124,11 +138,13 @@ services:
     build:
       context: ./medrisk_frontend
     container_name: medrisk-frontend
+    restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-5241}:80"
+      - "${FRONTEND_PUBLIC_PORT:-127.0.0.1:18080}:80"
 
 volumes:
   medrisk_mysql:

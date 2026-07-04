@@ -36,7 +36,7 @@
           <el-button :icon="Refresh" @click="loadDocuments">查询</el-button>
         </div>
       </div>
-      <el-table :data="documents" empty-text="暂无知识文档" @row-click="selected = $event">
+      <el-table v-loading="loading" :data="documents" empty-text="暂无知识文档" @row-click="selectDocument">
         <el-table-column prop="title" label="标题" min-width="220" />
         <el-table-column prop="fileType" label="类型" width="90" />
         <el-table-column label="可见性" width="110">
@@ -54,7 +54,9 @@
         </el-table-column>
         <el-table-column prop="sourceName" label="来源" min-width="160" show-overflow-tooltip />
         <el-table-column prop="userName" label="上传人" width="120" />
-        <el-table-column prop="createdAt" label="上传时间" min-width="170" />
+        <el-table-column label="上传时间（北京时间）" min-width="190">
+          <template #default="{ row }">{{ formatBeijingTime(row.createdAt) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" @click.stop="download(row)">下载</el-button>
@@ -64,7 +66,7 @@
       </el-table>
     </section>
 
-    <section v-if="selected" class="panel document-detail">
+    <section v-if="selected" v-loading="detailLoading" class="panel document-detail">
       <div class="panel-title">
         <h3>{{ selected.title }}</h3>
         <div class="table-actions">
@@ -87,7 +89,7 @@
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { onMounted, ref } from 'vue'
 import { Refresh, Upload } from '@element-plus/icons-vue'
-import { downloadDocument, postForm, request, uploadAdminDocument } from '../api/client'
+import { apiErrorMessage, downloadDocument, postForm, request, uploadAdminDocument } from '../api/client'
 
 const props = defineProps<{ role: string }>()
 
@@ -106,6 +108,7 @@ type KnowledgeDocument = {
   sourceLicense?: string
   userName?: string
   createdAt?: string
+  contentLoaded?: boolean
 }
 
 const documents = ref<KnowledgeDocument[]>([])
@@ -114,6 +117,7 @@ const title = ref('')
 const keyword = ref('')
 const selectedFile = ref<File | null>(null)
 const loading = ref(false)
+const detailLoading = ref(false)
 const isAdmin = props.role === 'ADMIN'
 const isDoctor = props.role === 'DOCTOR'
 const canSubmit = isAdmin || isDoctor
@@ -123,8 +127,42 @@ onMounted(loadDocuments)
 
 async function loadDocuments() {
   const query = keyword.value ? `?keyword=${encodeURIComponent(keyword.value)}` : ''
-  documents.value = await request<KnowledgeDocument[]>('get', `/documents${query}`)
-  selected.value ||= documents.value[0] || null
+  loading.value = true
+  try {
+    const data = await request<KnowledgeDocument[]>('get', `/documents${query}`)
+    documents.value = data
+    if (!selected.value || !data.some((item) => item.id === selected.value?.id)) {
+      selected.value = data[0] || null
+      if (selected.value) await loadDocumentDetail(selected.value.id)
+    }
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '文档列表加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function selectDocument(row: KnowledgeDocument) {
+  selected.value = row
+  if (!row.contentLoaded) {
+    await loadDocumentDetail(row.id)
+  }
+}
+
+async function loadDocumentDetail(id: number) {
+  detailLoading.value = true
+  try {
+    const detail = await request<KnowledgeDocument>('get', `/documents/${id}`)
+    const merged = { ...detail, contentLoaded: true }
+    selected.value = merged
+    documents.value = documents.value.map((item) => (item.id === id ? { ...item, ...merged } : item))
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '文档详情加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 function handleFile(file: UploadFile) {
@@ -156,28 +194,41 @@ async function upload() {
     await loadDocuments()
     ElMessage.success('文档已上传')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '上传失败')
+    const errorMessage = apiErrorMessage(error, '上传失败')
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
 }
 
 async function download(row: KnowledgeDocument) {
-  const response = await downloadDocument(row.id)
-  const blobUrl = URL.createObjectURL(response.data)
-  const link = document.createElement('a')
-  link.href = blobUrl
-  link.download = `${row.title}.${row.fileType || 'txt'}`
-  link.click()
-  URL.revokeObjectURL(blobUrl)
+  try {
+    const response = await downloadDocument(row.id)
+    const blobUrl = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = `${row.title}.${row.fileType || 'txt'}`
+    link.click()
+    URL.revokeObjectURL(blobUrl)
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '文档下载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  }
 }
 
 async function remove(id: number) {
-  await ElMessageBox.confirm('确认删除该知识文档？', '删除文档', { type: 'warning' })
-  await request('delete', `/admin/documents/${id}`)
-  documents.value = documents.value.filter((item) => item.id !== id)
-  if (selected.value?.id === id) selected.value = documents.value[0] || null
-  ElMessage.success('文档已删除')
+  try {
+    await ElMessageBox.confirm('确认删除该知识文档？', '删除文档', { type: 'warning' })
+    await request('delete', `/admin/documents/${id}`)
+    documents.value = documents.value.filter((item) => item.id !== id)
+    if (selected.value?.id === id) selected.value = documents.value[0] || null
+    ElMessage.success('文档已删除')
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errorMessage = apiErrorMessage(error, '文档删除失败')
+      if (errorMessage) ElMessage.error(errorMessage)
+    }
+  }
 }
 
 function visibilityText(value?: string) {
@@ -185,5 +236,30 @@ function visibilityText(value?: string) {
   if (value === 'ADMIN_ONLY') return '管理员'
   if (value === 'DRAFT') return '草稿'
   return '公开'
+}
+
+function formatBeijingTime(value?: string) {
+  if (!value) return '-'
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
+  if (!hasZone) {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/)
+    if (match) {
+      return `${match[1]}-${match[2]}-${match[3]} ${match[4] || '00'}:${match[5] || '00'}:${match[6] || '00'}`
+    }
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(date)
+  const map = Object.fromEntries(parts.map((item) => [item.type, item.value]))
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`
 }
 </script>

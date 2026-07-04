@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -36,15 +37,14 @@ public class KnowledgeDocumentService {
     }
 
     public List<Map<String, Object>> list(String keyword, UserEntity user) {
-        String normalized = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
-        return documents.findAllNewest().stream()
+        String normalized = keyword == null ? "" : keyword.trim();
+        List<KnowledgeDocumentRepository.SummaryRow> rows = normalized.isBlank()
+                ? documents.findSummaries(PageRequest.of(0, 200))
+                : documents.searchSummaries(normalized, PageRequest.of(0, 200));
+        return rows.stream()
                 .filter(row -> VisibilityPolicy.canRead(row.getVisibility(), row.getUploadedBy(), user))
-                .filter(row -> normalized.isBlank()
-                        || contains(row.getTitle(), normalized)
-                        || contains(row.getOriginalFileName(), normalized)
-                        || contains(row.getContent(), normalized))
                 .limit(200)
-                .map(this::toMap)
+                .map(this::toSummaryMap)
                 .toList();
     }
 
@@ -131,6 +131,32 @@ public class KnowledgeDocumentService {
                 "fileSize", row.getFileSize(),
                 "content", row.getContent(),
                 "summary", row.getSummary(),
+                "graphStatus", row.getGraphStatus(),
+                "graphError", row.getGraphError(),
+                "visibility", row.getVisibility(),
+                "visibilityLabel", VisibilityPolicy.display(row.getVisibility()),
+                "sourceName", row.getSourceName(),
+                "sourceUrl", row.getSourceUrl(),
+                "sourceLicense", row.getSourceLicense(),
+                "sourceRecordId", row.getSourceRecordId(),
+                "retrievedAt", row.getRetrievedAt(),
+                "uploadedBy", row.getUploadedBy(),
+                "userName", row.getUserName(),
+                "fileUrl", "/api/files/" + row.getFileBucket() + "/" + row.getFileObjectKey(),
+                "createdAt", row.getCreatedAt(),
+                "updatedAt", row.getUpdatedAt());
+    }
+
+    private Map<String, Object> toSummaryMap(KnowledgeDocumentRepository.SummaryRow row) {
+        return orderedMap(
+                "id", row.getId(),
+                "title", row.getTitle(),
+                "originalFileName", row.getOriginalFileName(),
+                "fileType", row.getFileType(),
+                "fileSize", row.getFileSize(),
+                "summary", row.getSummary(),
+                "content", null,
+                "contentLoaded", false,
                 "graphStatus", row.getGraphStatus(),
                 "graphError", row.getGraphError(),
                 "visibility", row.getVisibility(),

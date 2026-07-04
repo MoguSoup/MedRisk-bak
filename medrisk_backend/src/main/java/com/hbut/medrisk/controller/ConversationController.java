@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -54,6 +55,14 @@ public class ConversationController {
     @DeleteMapping("/{id}")
     ApiResponse<Map<String, Object>> delete(@RequestHeader("Authorization") String authorization, @PathVariable Long id) {
         return ApiResponse.ok(conversations.delete(id, authService.requireUser(authorization)));
+    }
+
+    @PutMapping("/{id}")
+    ApiResponse<Map<String, Object>> rename(
+            @RequestHeader("Authorization") String authorization,
+            @PathVariable Long id,
+            @RequestBody Map<String, String> body) {
+        return ApiResponse.ok(conversations.rename(id, body == null ? "" : body.get("title"), authService.requireUser(authorization)));
     }
 
     @PostMapping(value = "/{id}/messages", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

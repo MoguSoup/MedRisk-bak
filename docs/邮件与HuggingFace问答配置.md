@@ -70,6 +70,10 @@ MEDRISK_HTTP_READ_TIMEOUT_MS=20000
 
 网关如果和 Docker Compose 在同一台云服务器，优先使用内网或本机地址；如果网关部署在其他机器，必须使用 HTTPS 或受限内网隧道。不要把 ChatGPT 网页登录邮箱、密码、cookie、refresh token 或浏览器会话写入项目配置；MedRisk 只消费网关 token。
 
+## 开源发布边界
+
+本文件只能保留环境变量名、占位符和配置方法。公开仓库不得包含真实 SMTP 授权码、Hugging Face token、百炼/DeepSeek/OpenAI-compatible API Key、provider gateway token、ChatGPT 网页账号、cookie、refresh token、浏览器会话或 AI 工具使用记录。发布前请按 `docs/开源发布清单.md` 扫描公开文件。
+
 参考依据：
 
 - Three.js examples: https://threejs.org/examples/

@@ -974,6 +974,7 @@ body.is-resizing-sidebar {
 
 .report-preview {
   line-height: 1.8;
+  overflow-x: auto;
 }
 
 .report-preview pre {
@@ -982,6 +983,134 @@ body.is-resizing-sidebar {
   background: #f1f5f9;
   border-radius: 8px;
   padding: 12px;
+}
+
+.report-preview .medrisk-report {
+  color: #1f2937;
+}
+
+.report-preview .medrisk-report h1 {
+  margin: 0 0 18px;
+  color: #0f172a;
+  font-size: 24px;
+  line-height: 1.35;
+}
+
+.report-preview .medrisk-report h2 {
+  margin: 22px 0 12px;
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.report-preview .report-section + .report-section {
+  margin-top: 18px;
+}
+
+.report-preview .report-summary {
+  display: grid;
+  grid-template-columns: minmax(110px, 160px) minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.report-preview .report-summary dt {
+  color: #475569;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+.report-preview .report-summary dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.report-preview .report-conclusion {
+  margin: 14px 0 0;
+  color: #334155;
+}
+
+.report-preview .risk-factor-table,
+.report-preview .consultation-summary {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.report-preview .risk-factor-table th,
+.report-preview .risk-factor-table td,
+.report-preview .consultation-summary th,
+.report-preview .consultation-summary td {
+  border: 1px solid #dbe7f4;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-preview .risk-factor-table th,
+.report-preview .consultation-summary th {
+  width: 150px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 700;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.report-preview .consultation-summary th {
+  width: 190px;
+}
+
+.report-preview .risk-factor-table td,
+.report-preview .consultation-summary td {
+  color: #334155;
+  word-break: break-word;
+}
+
+.report-preview .report-recommendations {
+  margin: 0;
+  padding-left: 20px;
+  color: #334155;
+}
+
+.report-preview .disclaimer {
+  margin: 20px 0 0;
+  padding: 12px;
+  border-left: 4px solid #f59e0b;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+@media (max-width: 720px) {
+  .report-preview .report-summary {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .report-preview .consultation-summary,
+  .report-preview .consultation-summary tbody,
+  .report-preview .consultation-summary tr,
+  .report-preview .consultation-summary th,
+  .report-preview .consultation-summary td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-preview .consultation-summary {
+    border: 1px solid #dbe7f4;
+  }
+
+  .report-preview .consultation-summary tr + tr {
+    border-top: 1px solid #dbe7f4;
+  }
+
+  .report-preview .consultation-summary th,
+  .report-preview .consultation-summary td {
+    border: 0;
+  }
 }
 
 .report-sync-form .el-select {
@@ -1392,6 +1521,11 @@ body.is-resizing-sidebar {
   font-size: 24px;
 }
 
+.metric-card.mini small {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .training-chart {
   width: 100%;
   height: 320px;
@@ -1772,7 +1906,7 @@ body.is-resizing-sidebar {
 .conversation-card {
   min-height: 58px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
   align-items: center;
   border: 1px solid #dbe7f4;
   border-radius: 8px;
@@ -1797,6 +1931,7 @@ body.is-resizing-sidebar {
   background: #eff6ff;
 }
 
+.conversation-rename,
 .conversation-delete {
   justify-self: center;
 }
@@ -2182,6 +2317,31 @@ body.is-resizing-sidebar {
 
 .graph-health strong.ok {
   color: #15803d;
+}
+
+.graph-job-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 360px);
+  gap: 16px;
+  align-items: center;
+  padding-top: 12px;
+}
+
+.graph-job-progress div {
+  min-width: 0;
+}
+
+.graph-job-progress strong,
+.graph-job-progress span {
+  display: block;
+}
+
+.graph-job-progress span {
+  margin-top: 4px;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .graph-visual-panel .dashboard-chart {

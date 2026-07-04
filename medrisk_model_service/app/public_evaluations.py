@@ -49,24 +49,6 @@ PUBLIC_EVALUATIONS: dict[str, dict[str, Any]] = {
         "positiveRows": 462,
         "validationType": "held-out public examination/laboratory evaluation",
     },
-    "heart_uci": {
-        "evaluationDataset": "UCI Heart Disease",
-        "datasetSource": "UCI Machine Learning Repository",
-        "datasetUrl": "https://archive.ics.uci.edu/dataset/45/heart+disease",
-        "datasetLicense": "UCI dataset license / citation required",
-        "sampleCount": 303,
-        "positiveRows": 139,
-        "validationType": "supplemental public benchmark",
-    },
-    "kidney_uci": {
-        "evaluationDataset": "UCI Chronic Kidney Disease",
-        "datasetSource": "UCI Machine Learning Repository",
-        "datasetUrl": "https://archive.ics.uci.edu/dataset/336/chronic+kidney+disease",
-        "datasetLicense": "CC BY 4.0",
-        "sampleCount": 400,
-        "positiveRows": 250,
-        "validationType": "supplemental public benchmark",
-    },
 }
 
 

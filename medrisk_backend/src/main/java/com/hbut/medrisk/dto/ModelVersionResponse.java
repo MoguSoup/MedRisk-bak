@@ -15,6 +15,7 @@ public record ModelVersionResponse(
         String evaluationDatasetName,
         String evaluationDatasetSource,
         String evaluationDatasetUrl,
+        String modelPath,
         boolean active,
         LocalDateTime createdAt) {
 }

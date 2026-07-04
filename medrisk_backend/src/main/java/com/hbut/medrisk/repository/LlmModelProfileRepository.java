@@ -6,8 +6,9 @@ import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface LlmModelProfileRepository extends JpaRepository<LlmModelProfileEntity, Long> {
-    List<LlmModelProfileEntity> findByEnabledTrueOrderByDefaultProfileDescUpdatedAtDesc();
-    List<LlmModelProfileEntity> findAllByOrderByDefaultProfileDescUpdatedAtDesc();
-    Optional<LlmModelProfileEntity> findFirstByDefaultProfileTrueAndEnabledTrueOrderByUpdatedAtDesc();
+    List<LlmModelProfileEntity> findByEnabledTrueAndDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc();
+    List<LlmModelProfileEntity> findByDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc();
+    Optional<LlmModelProfileEntity> findFirstByDefaultProfileTrueAndEnabledTrueAndDeletedAtIsNullOrderByUpdatedAtDesc();
     boolean existsByModelNameAndBaseUrl(String modelName, String baseUrl);
+    boolean existsByModelNameAndBaseUrlAndDeletedAtIsNotNull(String modelName, String baseUrl);
 }

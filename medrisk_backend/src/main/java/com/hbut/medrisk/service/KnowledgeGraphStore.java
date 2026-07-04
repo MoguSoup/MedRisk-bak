@@ -23,6 +23,12 @@ import org.springframework.stereotype.Service;
 public class KnowledgeGraphStore {
     private static final String SOURCE = "MedRisk";
     private static final long UNAVAILABLE_BACKOFF_MILLIS = 5000L;
+    private static final Set<String> DEFAULT_VISUAL_NODE_TYPES = Set.of(
+            "Disease", "Symptom", "BodyPart", "Pathogen", "Drug", "Treatment",
+            "Exam", "Complication", "RiskFactor", "Department", "TimePoint", "PatientSynthetic");
+    private static final Set<String> GLOBAL_ENTITY_TYPES = Set.of(
+            "Disease", "Symptom", "BodyPart", "Pathogen", "Drug", "Treatment",
+            "Exam", "Complication", "RiskFactor", "Department", "TimePoint");
 
     private final Driver driver;
     private final String database;
@@ -212,8 +218,32 @@ public class KnowledgeGraphStore {
                                 "sourceLicense", sourceLicense,
                                 "visibility", visibility));
                     }
+                    if (!tailKey.equals(documentKey) && !tailKey.equals(headKey)) {
+                        tx.run("""
+                                MATCH (d:Document {graphKey: $documentKey})
+                                MATCH (t:%s {graphKey: $tailKey})
+                                MERGE (t)-[r:RECORDED_IN]->(d)
+                                SET r.medriskSource = $source,
+                                    r.documentId = $documentId,
+                                    r.label = '记录于',
+                                    r.sourceName = $sourceName,
+                                    r.sourceUrl = $sourceUrl,
+                                    r.sourceLicense = $sourceLicense,
+                                    r.visibility = $visibility
+                                """.formatted(tailType), params(
+                                "documentKey", documentKey,
+                                "tailKey", tailKey,
+                                "source", SOURCE,
+                                "documentId", documentId,
+                                "sourceName", sourceName,
+                                "sourceUrl", sourceUrl,
+                                "sourceLicense", sourceLicense,
+                                "visibility", visibility));
+                    }
                     nodes += 2;
-                    relationships += headKey.equals(documentKey) ? 1 : 2;
+                    relationships += 1
+                            + (headKey.equals(documentKey) ? 0 : 1)
+                            + (!tailKey.equals(documentKey) && !tailKey.equals(headKey) ? 1 : 0);
                 }
                 return new GraphWriteResult(nodes, relationships);
             });
@@ -273,12 +303,66 @@ public class KnowledgeGraphStore {
         try (Session session = session()) {
             return session.executeRead(tx -> {
                 Map<String, Object> params = new LinkedHashMap<>();
+                List<String> effectiveNodeTypes = nodeTypes == null || nodeTypes.isEmpty()
+                        ? List.copyOf(DEFAULT_VISUAL_NODE_TYPES)
+                        : nodeTypes;
                 params.put("source", SOURCE);
                 params.put("keyword", keyword == null ? "" : keyword.trim());
-                params.put("nodeTypes", nodeTypes == null ? List.of() : nodeTypes);
+                params.put("nodeTypes", effectiveNodeTypes);
                 params.put("visibilities", visibilities == null || visibilities.isEmpty() ? List.of("PUBLIC") : visibilities);
                 params.put("sourceName", sourceName == null ? "" : sourceName.trim());
+                params.put("relationshipTypes", relationshipTypes == null ? List.of() : relationshipTypes);
                 params.put("limit", limit);
+                Record metadataSummary = tx.run("""
+                        MATCH (n)
+                        WHERE n.medriskSource = $source
+                          AND coalesce(n.visibility, 'PUBLIC') IN $visibilities
+                          AND ($sourceName = '' OR coalesce(n.sourceName, '') = $sourceName)
+                        WITH collect(DISTINCT coalesce(n.type, labels(n)[0])) AS nodeTypes,
+                             collect(DISTINCT coalesce(n.sourceName, '')) AS sourceNames,
+                             collect(DISTINCT coalesce(n.visibility, 'PUBLIC')) AS visibilities
+                        OPTIONAL MATCH ()-[r]->()
+                        WHERE coalesce(r.medriskSource, $source) = $source
+                          AND coalesce(r.visibility, 'PUBLIC') IN $visibilities
+                          AND ($sourceName = '' OR coalesce(r.sourceName, '') = $sourceName)
+                        RETURN nodeTypes, sourceNames, visibilities,
+                               collect(DISTINCT coalesce(r.label, type(r))) AS relationshipTypes
+                        """, params).single();
+                Record nodeSummary = tx.run("""
+                        MATCH (n)
+                        WHERE n.medriskSource = $source
+                          AND ($keyword = '' OR toLower(n.name) CONTAINS toLower($keyword))
+                          AND (size($nodeTypes) = 0 OR coalesce(n.type, labels(n)[0]) IN $nodeTypes)
+                          AND coalesce(n.visibility, 'PUBLIC') IN $visibilities
+                          AND ($sourceName = '' OR coalesce(n.sourceName, '') = $sourceName)
+                        RETURN count(n) AS nodeCount,
+                               collect(DISTINCT coalesce(n.type, labels(n)[0])) AS nodeTypes,
+                               collect(DISTINCT coalesce(n.sourceName, '')) AS sourceNames,
+                               collect(DISTINCT coalesce(n.visibility, 'PUBLIC')) AS visibilities
+                        """, params).single();
+                Record relationshipSummary = tx.run("""
+                        MATCH (a)-[r]->(b)
+                        WHERE a.medriskSource = $source AND b.medriskSource = $source
+                          AND coalesce(r.medriskSource, $source) = $source
+                          AND (size($relationshipTypes) = 0 OR coalesce(r.label, type(r)) IN $relationshipTypes OR type(r) IN $relationshipTypes)
+                          AND coalesce(a.visibility, 'PUBLIC') IN $visibilities
+                          AND coalesce(b.visibility, 'PUBLIC') IN $visibilities
+                          AND coalesce(r.visibility, 'PUBLIC') IN $visibilities
+                          AND ($sourceName = ''
+                               OR coalesce(a.sourceName, '') = $sourceName
+                               OR coalesce(b.sourceName, '') = $sourceName
+                               OR coalesce(r.sourceName, '') = $sourceName)
+                        RETURN count(r) AS relationshipCount,
+                               collect(DISTINCT coalesce(r.label, type(r))) AS relationshipTypes
+                        """, params).single();
+                List<String> allNodeTypes = metadataSummary.get("nodeTypes").asList(value -> value.asString(""))
+                        .stream().filter(value -> !value.isBlank()).toList();
+                List<String> allRelationshipTypes = metadataSummary.get("relationshipTypes").asList(value -> value.asString(""))
+                        .stream().filter(value -> !value.isBlank()).toList();
+                List<String> allSourceNames = metadataSummary.get("sourceNames").asList(value -> value.asString(""))
+                        .stream().filter(value -> !value.isBlank()).toList();
+                List<String> allVisibilities = metadataSummary.get("visibilities").asList(value -> value.asString(""))
+                        .stream().filter(value -> !value.isBlank()).toList();
                 List<Map<String, Object>> seedNodes = tx.run("""
                         MATCH (n)
                         WHERE n.medriskSource = $source
@@ -361,14 +445,35 @@ public class KnowledgeGraphStore {
                         .filter(row -> retainedNodeIds.contains(String.valueOf(row.get("source")))
                                 && retainedNodeIds.contains(String.valueOf(row.get("target"))))
                         .toList();
+                if (!relationships.isEmpty()) {
+                    Set<String> connectedNodeIds = new HashSet<>();
+                    relationships.forEach(row -> {
+                        connectedNodeIds.add(String.valueOf(row.get("source")));
+                        connectedNodeIds.add(String.valueOf(row.get("target")));
+                    });
+                    nodes = nodes.stream()
+                            .filter(node -> connectedNodeIds.contains(String.valueOf(node.get("id"))))
+                            .toList();
+                }
+                MergedVisualizationGraph mergedGraph = mergeVisualizationGraph(nodes, relationships, Math.max(120, Math.min(limit * 3, 300)));
+                nodes = mergedGraph.nodes();
+                relationships = mergedGraph.relationships();
                 return orderedMap(
                         "nodes", nodes,
                         "relationships", relationships,
-                        "nodeTypes", nodes.stream().map(node -> String.valueOf(node.get("type"))).distinct().toList(),
-                        "relationshipTypes", relationships.stream().map(row -> String.valueOf(row.get("label"))).distinct().toList(),
-                        "sourceNames", nodes.stream().map(node -> String.valueOf(node.get("sourceName"))).filter(value -> !value.isBlank()).distinct().toList(),
-                        "visibilities", nodes.stream().map(node -> String.valueOf(node.get("visibility"))).distinct().toList(),
-                        "summary", orderedMap("nodeCount", nodes.size(), "relationshipCount", relationships.size()));
+                        "nodeTypes", allNodeTypes,
+                        "relationshipTypes", allRelationshipTypes,
+                        "sourceNames", allSourceNames,
+                        "visibilities", allVisibilities,
+                        "summary", orderedMap(
+                                "nodeCount", nodes.size(),
+                                "relationshipCount", relationships.size(),
+                                "rawNodeCount", nodeSummary.get("nodeCount").asLong(0),
+                                "rawRelationshipCount", relationshipSummary.get("relationshipCount").asLong(0),
+                                "mergedNodeCount", mergedGraph.mergedNodeCount(),
+                                "mergedRelationshipCount", mergedGraph.mergedRelationshipCount(),
+                                "displayedNodeCount", nodes.size(),
+                                "displayedRelationshipCount", relationships.size()));
             });
         } catch (Exception ex) {
             markUnavailable();
@@ -426,6 +531,100 @@ public class KnowledgeGraphStore {
         return result;
     }
 
+    private MergedVisualizationGraph mergeVisualizationGraph(
+            List<Map<String, Object>> nodes,
+            List<Map<String, Object>> relationships,
+            int nodeLimit) {
+        Map<String, String> idToMergeKey = new LinkedHashMap<>();
+        Map<String, MergedNodeAccumulator> mergedNodes = new LinkedHashMap<>();
+        for (Map<String, Object> node : nodes) {
+            String type = String.valueOf(node.getOrDefault("type", "Entity"));
+            String name = String.valueOf(node.getOrDefault("name", ""));
+            String key = visualMergeKey(type, name);
+            idToMergeKey.put(String.valueOf(node.get("id")), key);
+            mergedNodes.computeIfAbsent(key, ignored -> new MergedNodeAccumulator(key, type, name, node)).add(node);
+        }
+
+        Map<String, Map<String, Object>> mergedRelationships = new LinkedHashMap<>();
+        for (Map<String, Object> relationship : relationships) {
+            String source = idToMergeKey.get(String.valueOf(relationship.get("source")));
+            String target = idToMergeKey.get(String.valueOf(relationship.get("target")));
+            if (source == null || target == null || source.equals(target)) {
+                continue;
+            }
+            String type = String.valueOf(relationship.getOrDefault("type", "RELATED_TO"));
+            String label = String.valueOf(relationship.getOrDefault("label", type));
+            String key = source + "|" + type + "|" + target + "|" + label;
+            if (!mergedRelationships.containsKey(key)) {
+                mergedRelationships.put(key, orderedMap(
+                        "source", source,
+                        "target", target,
+                        "type", type,
+                        "label", label,
+                        "visibility", relationship.getOrDefault("visibility", "PUBLIC"),
+                        "sourceName", relationship.getOrDefault("sourceName", "")));
+            }
+            MergedNodeAccumulator sourceNode = mergedNodes.get(source);
+            MergedNodeAccumulator targetNode = mergedNodes.get(target);
+            if (sourceNode != null) sourceNode.incrementDegree();
+            if (targetNode != null) targetNode.incrementDegree();
+        }
+
+        List<Map<String, Object>> allNodes = mergedNodes.values().stream()
+                .map(MergedNodeAccumulator::toMap)
+                .sorted((left, right) -> {
+                    int degree = Long.compare(
+                            Number.class.cast(right.getOrDefault("degree", 0L)).longValue(),
+                            Number.class.cast(left.getOrDefault("degree", 0L)).longValue());
+                    return degree != 0 ? degree : String.valueOf(left.get("name")).compareTo(String.valueOf(right.get("name")));
+                })
+                .toList();
+        Set<String> retainedIds = new HashSet<>(allNodes.stream()
+                .limit(nodeLimit)
+                .map(node -> String.valueOf(node.get("id")))
+                .toList());
+        List<Map<String, Object>> retainedRelationships = mergedRelationships.values().stream()
+                .filter(row -> retainedIds.contains(String.valueOf(row.get("source")))
+                        && retainedIds.contains(String.valueOf(row.get("target"))))
+                .toList();
+        if (!retainedRelationships.isEmpty()) {
+            Set<String> connectedIds = new HashSet<>();
+            retainedRelationships.forEach(row -> {
+                connectedIds.add(String.valueOf(row.get("source")));
+                connectedIds.add(String.valueOf(row.get("target")));
+            });
+            retainedIds.retainAll(connectedIds);
+        }
+        List<Map<String, Object>> retainedNodes = allNodes.stream()
+                .filter(node -> retainedIds.contains(String.valueOf(node.get("id"))))
+                .toList();
+        return new MergedVisualizationGraph(
+                retainedNodes,
+                retainedRelationships,
+                allNodes.size(),
+                mergedRelationships.size());
+    }
+
+    private String visualMergeKey(String type, String name) {
+        return safeLabel(type) + ":" + normalizeVisualName(type, name);
+    }
+
+    private String normalizeVisualName(String type, String name) {
+        String value = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        value = value.replaceAll("[（(]\\d{1,4}[）)]$", "");
+        value = value.replaceAll("\\s+\\d{1,4}$", "");
+        value = switch (safeLabel(type)) {
+            case "Symptom" -> value.replaceAll("(相关症状|症状表现|临床症状|症状)$", "");
+            case "Treatment" -> value.replaceAll("(治疗方法|治疗方案|相关治疗|治疗)$", "");
+            case "Exam" -> value.replaceAll("(检查项目|相关检查|检查)$", "");
+            case "RiskFactor" -> value.replaceAll("(危险因素|风险因素|相关风险|风险)$", "");
+            case "Drug" -> value.replaceAll("(相关药物|常用药物|药物|用药)$", "");
+            default -> value;
+        };
+        value = value.replaceAll("[\\s\\p{Punct}，。；：、（）【】《》“”‘’]+", "");
+        return value.isBlank() ? "unknown" : value;
+    }
+
     private void putVisualizationNode(Map<String, Map<String, Object>> nodeMap, Record record, String idField, String prefix) {
         String id = String.valueOf(record.get(idField).asLong());
         nodeMap.putIfAbsent(id, orderedMap(
@@ -479,6 +678,9 @@ public class KnowledgeGraphStore {
         if ("Document".equals(type) && keyPart(documentTitle).equals(keyPart(name))) {
             return documentKey;
         }
+        if (GLOBAL_ENTITY_TYPES.contains(type)) {
+            return "entity:" + keyPart(type) + ":" + keyPart(name);
+        }
         return documentKey + ":" + keyPart(type) + ":" + keyPart(name);
     }
 
@@ -519,4 +721,63 @@ public class KnowledgeGraphStore {
             String tailDescription) {}
 
     public record GraphWriteResult(int nodesCreated, int relationshipsCreated) {}
+
+    private record MergedVisualizationGraph(
+            List<Map<String, Object>> nodes,
+            List<Map<String, Object>> relationships,
+            int mergedNodeCount,
+            int mergedRelationshipCount) {}
+
+    private final class MergedNodeAccumulator {
+        private final String key;
+        private final String type;
+        private String name;
+        private String description;
+        private String sourceName;
+        private String sourceUrl;
+        private String visibility;
+        private long degree;
+        private int aliases;
+
+        private MergedNodeAccumulator(String key, String type, String name, Map<String, Object> node) {
+            this.key = key;
+            this.type = safeLabel(type);
+            this.name = name == null ? "" : name;
+            this.description = String.valueOf(node.getOrDefault("description", ""));
+            this.sourceName = String.valueOf(node.getOrDefault("sourceName", ""));
+            this.sourceUrl = String.valueOf(node.getOrDefault("sourceUrl", ""));
+            this.visibility = String.valueOf(node.getOrDefault("visibility", "PUBLIC"));
+            this.degree = Number.class.cast(node.getOrDefault("degree", 0L)).longValue();
+            this.aliases = 0;
+        }
+
+        private void add(Map<String, Object> node) {
+            aliases++;
+            String candidate = String.valueOf(node.getOrDefault("name", ""));
+            if (!candidate.isBlank() && (name.isBlank() || candidate.length() < name.length())) {
+                name = candidate;
+            }
+            String candidateDescription = String.valueOf(node.getOrDefault("description", ""));
+            if (description.isBlank() && !candidateDescription.isBlank()) {
+                description = candidateDescription;
+            }
+        }
+
+        private void incrementDegree() {
+            degree++;
+        }
+
+        private Map<String, Object> toMap() {
+            return orderedMap(
+                    "id", key,
+                    "name", name,
+                    "type", type,
+                    "description", description,
+                    "sourceName", sourceName,
+                    "sourceUrl", sourceUrl,
+                    "visibility", visibility,
+                    "degree", degree,
+                    "aliases", aliases);
+        }
+    }
 }

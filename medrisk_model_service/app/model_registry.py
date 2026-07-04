@@ -11,7 +11,7 @@ import pandas as pd
 
 from .public_evaluations import public_evaluation
 from .schemas import ModelInfo, PredictionResponse, RiskFactor
-from .training import encode_features, load_bundle, model_importances, model_probabilities
+from .training import default_output_root, encode_features, load_bundle, model_importances, model_probabilities
 
 
 DISCLAIMER = "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。"
@@ -69,6 +69,7 @@ class ModelRegistry:
         self._trained_models: dict[str, dict[str, Any]] = {}
         self._active_models_file = active_models_file()
         self._load_active_models()
+        self._load_latest_trained_models()
 
     def diseases(self) -> list[str]:
         return sorted(self._models)
@@ -191,6 +192,45 @@ class ModelRegistry:
             model_path = str(item.get("modelPath") or "")
             version = str(item.get("version") or "")
             if not model_path or not version:
+                continue
+            try:
+                bundle = load_bundle(model_path)
+                bundle["version"] = version
+                self._trained_models[disease_type] = bundle
+            except Exception:
+                continue
+
+    def _load_latest_trained_models(self) -> None:
+        root = default_output_root()
+        if not root.exists():
+            return
+        candidates: list[tuple[float, str, str, Path]] = []
+        for metadata_path in root.glob("**/metadata.json"):
+            model_path = metadata_path.with_name("model.joblib")
+            if not model_path.exists():
+                continue
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+            disease_type = str(metadata.get("diseaseType") or metadata.get("disease_type") or "").strip()
+            version = str(metadata.get("version") or metadata.get("modelVersion") or model_path.parent.name).strip()
+            if not disease_type:
+                try:
+                    bundle = load_bundle(model_path)
+                    disease_type = str(bundle.get("disease_type") or "").strip()
+                except Exception:
+                    continue
+            if not disease_type or not version:
+                continue
+            try:
+                mtime = model_path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            candidates.append((mtime, disease_type, version, model_path.resolve()))
+
+        for _, disease_type, version, model_path in sorted(candidates, reverse=True):
+            if disease_type in self._trained_models:
                 continue
             try:
                 bundle = load_bundle(model_path)

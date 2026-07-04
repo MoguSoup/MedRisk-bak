@@ -30,6 +30,7 @@ public class JwtService {
                     "uid", user.getId(),
                     "role", user.getRole(),
                     "name", user.getName(),
+                    "sid", user.getCurrentSessionId() == null ? "" : user.getCurrentSessionId(),
                     "exp", Instant.now().plusSeconds(60 * 60 * 8).getEpochSecond()));
             String signature = sign(header + "." + payload);
             return header + "." + payload + "." + signature;

@@ -18,7 +18,7 @@ vi.mock('../api/client', () => ({
     nodeTypes: ['Disease', 'Symptom', 'Drug'],
     relationshipTypes: ['shows'],
     sourceNames: ['Demo'],
-    summary: { nodeCount: 3, relationshipCount: 1 }
+    summary: { nodeCount: 3, relationshipCount: 1, displayedNodeCount: 2, displayedRelationshipCount: 1 }
   }))
 }))
 
@@ -37,5 +37,7 @@ describe('GraphVisualization', () => {
     expect(wrapper.find('.graph-fallback').exists()).toBe(true)
     expect(wrapper.text()).toContain('Disease A')
     expect(wrapper.text()).toContain('Symptom')
+    expect(wrapper.text()).toContain('展示节点')
+    expect(wrapper.text()).toContain('2')
   })
 })

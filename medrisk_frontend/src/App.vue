@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <main v-if="!currentUser" class="login-shell">
     <section class="login-visual">
       <HeroThreeScene />
@@ -231,7 +231,9 @@
             <el-table-column label="风险概率" width="120">
               <template #default="{ row }">{{ percent(row.riskProbability) }}</template>
             </el-table-column>
-            <el-table-column prop="createdAt" label="创建时间" min-width="170" />
+            <el-table-column label="创建时间（北京时间）" min-width="190">
+              <template #default="{ row }">{{ formatBeijingTime(row.createdAt) }}</template>
+            </el-table-column>
           </el-table>
         </section>
       </section>
@@ -304,9 +306,10 @@
             <template #default="{ row }">{{ percent(row.riskProbability) }}</template>
           </el-table-column>
           <el-table-column prop="modelVersion" label="模型版本" min-width="190" />
-          <el-table-column label="操作" width="130">
+          <el-table-column label="操作" width="210">
             <template #default="{ row }">
               <el-button text type="primary" @click="generateReport(row.recordId)">生成报告</el-button>
+              <el-button text type="danger" :icon="Delete" @click="deletePrediction(row.recordId)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -321,11 +324,14 @@
           <el-table :data="reports" empty-text="暂无报告">
             <el-table-column prop="id" label="编号" width="80" />
             <el-table-column prop="reportTitle" label="标题" min-width="220" />
-            <el-table-column prop="createdAt" label="生成时间" width="190" />
-            <el-table-column label="操作" width="160">
+            <el-table-column label="生成时间（北京时间）" width="210">
+              <template #default="{ row }">{{ formatBeijingTime(row.createdAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="230">
               <template #default="{ row }">
-                <el-button text type="primary" @click="selectedReport = row">预览</el-button>
+                <el-button text type="primary" @click="previewReport(row.id)">预览</el-button>
                 <el-button text type="success" @click="download(row.id)">下载</el-button>
+                <el-button text type="danger" :icon="Delete" @click="deleteReport(row.id)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -344,16 +350,29 @@
       <section v-if="activeView === 'patientRecords'" class="panel">
         <div class="panel-title">
           <h3>患者风险记录</h3>
-          <el-tag type="warning">医生可见全量演示记录</el-tag>
+          <el-tag type="warning">医生/管理员可见全量演示记录</el-tag>
         </div>
         <el-table :data="history" empty-text="暂无患者记录">
+          <el-table-column prop="recordId" label="编号" width="80" />
+          <el-table-column label="患者" min-width="130">
+            <template #default="{ row }">{{ row.patientName || '演示患者' }}</template>
+          </el-table-column>
           <el-table-column prop="diseaseName" label="病种" width="120" />
           <el-table-column label="风险等级" width="120">
             <template #default="{ row }"><el-tag :type="riskType(row.riskLabel)">{{ riskText(row.riskLabel) }}</el-tag></template>
           </el-table-column>
-          <el-table-column prop="modelVersion" label="模型版本" />
-          <el-table-column label="建议">
+          <el-table-column label="风险概率" width="120">
+            <template #default="{ row }">{{ percent(row.riskProbability) }}</template>
+          </el-table-column>
+          <el-table-column prop="modelVersion" label="模型版本" min-width="180" />
+          <el-table-column label="建议" min-width="220">
             <template #default="{ row }">{{ row.recommendations?.[0] || '请结合病史与线下检查综合判断。' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="210" fixed="right">
+            <template #default="{ row }">
+              <el-button text type="primary" @click="generateReport(row.recordId)">生成报告</el-button>
+              <el-button text type="danger" :icon="Delete" @click="deletePrediction(row.recordId)">删除</el-button>
+            </template>
           </el-table-column>
         </el-table>
       </section>
@@ -416,7 +435,9 @@
             <el-table-column label="登录 IP" width="140">
               <template #default="{ row }">{{ row.clientIp || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="createdAt" label="时间" min-width="170" />
+            <el-table-column label="时间" min-width="170">
+              <template #default="{ row }">{{ formatBeijingTime(row.createdAt) }}</template>
+            </el-table-column>
           </el-table>
         </section>
       </section>
@@ -530,7 +551,7 @@
           </el-form>
           <el-form label-position="top" class="admin-form-grid user-edit-form">
             <el-form-item label="用户名">
-              <el-input v-model="userForm.username" placeholder="如：doctor_01" />
+              <el-input v-model="userForm.username" :disabled="editingProtectedAdmin" placeholder="如：doctor_01" />
             </el-form-item>
             <el-form-item label="姓名">
               <el-input v-model="userForm.name" placeholder="请输入真实姓名或演示姓名" />
@@ -542,14 +563,14 @@
               <el-input v-model="userForm.phone" placeholder="可选：请输入手机号" />
             </el-form-item>
             <el-form-item label="角色">
-              <el-select v-model="userForm.role" placeholder="请选择账号角色">
+              <el-select v-model="userForm.role" :disabled="editingProtectedAdmin" placeholder="请选择账号角色">
                 <el-option label="患者" value="PATIENT" />
                 <el-option label="医生" value="DOCTOR" />
                 <el-option label="管理员" value="ADMIN" />
               </el-select>
             </el-form-item>
             <el-form-item label="状态">
-              <el-select v-model="userForm.status" placeholder="请选择账号状态">
+              <el-select v-model="userForm.status" :disabled="editingProtectedAdmin" placeholder="请选择账号状态">
                 <el-option label="启用" value="ACTIVE" />
                 <el-option label="禁用" value="DISABLED" />
               </el-select>
@@ -575,15 +596,17 @@
             <el-table-column label="状态" width="90">
               <template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'danger'">{{ userStatusText(row.status) }}</el-tag></template>
             </el-table-column>
-            <el-table-column prop="lastLoginAt" label="最近登录" min-width="170" />
+            <el-table-column label="最近登录（北京时间）" min-width="190">
+              <template #default="{ row }">{{ formatBeijingTime(row.lastLoginAt) }}</template>
+            </el-table-column>
             <el-table-column label="操作" width="280" fixed="right">
               <template #default="{ row }">
                 <el-button text type="primary" :icon="Edit" @click="editUser(row)">编辑</el-button>
-                <el-button text :type="row.status === 'ACTIVE' ? 'warning' : 'success'" :disabled="row.id === currentUser?.id" @click="toggleUserStatus(row)">
+                <el-button text :type="row.status === 'ACTIVE' ? 'warning' : 'success'" :disabled="row.id === currentUser?.id || isProtectedAdminUser(row)" @click="toggleUserStatus(row)">
                   {{ row.status === 'ACTIVE' ? '禁用' : '启用' }}
                 </el-button>
                 <el-button text type="info" @click="resetUserPassword(row.id)">重置密码</el-button>
-                <el-button text type="danger" :icon="Delete" :disabled="row.id === currentUser?.id" @click="deleteUser(row.id)">删除</el-button>
+                <el-button text type="danger" :icon="Delete" :disabled="row.id === currentUser?.id || isProtectedAdminUser(row)" @click="deleteUser(row.id)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -595,7 +618,7 @@
         <section class="panel">
           <div class="panel-title">
             <h3>管理员模型训练管理</h3>
-            <el-button :icon="Refresh" :loading="loading" @click="loadAdmin">刷新</el-button>
+            <el-button :icon="Refresh" :loading="loading" @click="refreshCurrentAdminSection">刷新</el-button>
           </div>
           <div class="admin-section-stack">
             <div v-if="activeView === 'modelManagement' || activeView === 'models'" class="admin-section-panel">
@@ -626,10 +649,11 @@
                     </div>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="180" fixed="right">
+                <el-table-column label="操作" width="250" fixed="right">
                   <template #default="{ row }">
                     <el-button text type="primary" :icon="CircleCheck" :disabled="row.active" @click="activateAdminModel(row.id)">启用</el-button>
                     <el-button text type="success" :icon="DataAnalysis" @click="prepareEvaluation(row.id)">评估</el-button>
+                    <el-button text type="danger" :icon="Delete" @click="deleteModelVersion(row)">删除</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -658,6 +682,7 @@
               <div class="action-row">
                 <el-button type="primary" :icon="Upload" :loading="loading" @click="submitDataset">上传并校验</el-button>
                 <el-button :icon="Download" :loading="loading" @click="importPublicDatasets">导入公开训练数据集</el-button>
+                <el-button type="warning" :icon="Delete" :loading="loading" @click="pruneSmallDatasets">清理小样本数据集</el-button>
               </div>
               <el-table :data="datasets" empty-text="暂无数据集">
                 <el-table-column prop="name" label="名称" min-width="170" />
@@ -832,9 +857,18 @@
             <div v-if="activeView === 'modelManagement' || activeView === 'evaluations'" class="admin-section-panel">
               <el-form label-position="top" class="admin-form-grid">
                 <el-form-item label="模型版本">
-                  <el-select v-model="evaluationForm.modelVersionId" placeholder="选择模型版本">
-                    <el-option v-for="item in models" :key="item.id" :label="`${item.diseaseName} · ${item.version}`" :value="item.id" />
+                  <el-select
+                    v-model="evaluationForm.modelVersionId"
+                    filterable
+                    :loading="modelsLoading"
+                    placeholder="选择模型版本"
+                    @visible-change="handleModelSelectVisible"
+                  >
+                    <el-option v-for="item in selectableModels" :key="item.id" :label="modelOptionLabel(item)" :value="item.id" />
                   </el-select>
+                  <p v-if="!selectableModels.length" class="muted-line">
+                    暂无可选模型，<el-button text type="primary" :loading="modelsLoading" @click="loadModels(true)">刷新模型列表</el-button>
+                  </p>
                 </el-form-item>
                 <el-form-item label="评估数据集">
                   <el-select v-model="evaluationForm.datasetId" placeholder="选择数据集">
@@ -870,9 +904,19 @@
             <div v-if="activeView === 'modelManagement' || activeView === 'feedback'" class="admin-section-panel">
               <el-form label-position="top" class="admin-form-grid feedback-form">
                 <el-form-item label="关联模型">
-                  <el-select v-model="feedbackForm.modelVersionId" clearable placeholder="可选">
-                    <el-option v-for="item in models" :key="item.id" :label="`${item.diseaseName} · ${item.version}`" :value="item.id" />
+                  <el-select
+                    v-model="feedbackForm.modelVersionId"
+                    clearable
+                    filterable
+                    :loading="modelsLoading"
+                    placeholder="可选"
+                    @visible-change="handleModelSelectVisible"
+                  >
+                    <el-option v-for="item in selectableModels" :key="item.id" :label="modelOptionLabel(item)" :value="item.id" />
                   </el-select>
+                  <p v-if="!selectableModels.length" class="muted-line">
+                    暂无可选模型，<el-button text type="primary" :loading="modelsLoading" @click="loadModels(true)">刷新模型列表</el-button>
+                  </p>
                 </el-form-item>
                 <el-form-item label="关联评估">
                   <el-select v-model="feedbackForm.evaluationId" clearable placeholder="可选">
@@ -985,7 +1029,7 @@
                 <el-table-column label="操作" width="160" fixed="right">
                   <template #default="{ row }">
                     <el-button text type="primary" :icon="Edit" @click="editLlmProfile(row)">编辑</el-button>
-                    <el-button text type="warning" @click="disableLlmProfile(row.id)">停用</el-button>
+                    <el-button text type="danger" :icon="Delete" @click="deleteLlmProfile(row.id)">删除</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -1008,7 +1052,9 @@
             <el-table-column label="请求 IP" min-width="170">
               <template #default="{ row }">{{ row.clientIp || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="createdAt" label="时间" min-width="210" />
+            <el-table-column label="时间（北京时间）" min-width="210">
+              <template #default="{ row }">{{ formatBeijingTime(row.createdAt) }}</template>
+            </el-table-column>
           </el-table>
         </section>
       </section>
@@ -1044,7 +1090,7 @@
                 <el-input :model-value="userStatusText(currentUser.status)" disabled />
               </el-form-item>
               <el-form-item label="最近登录">
-                <el-input :model-value="currentUser.lastLoginAt || '首次登录'" disabled />
+                <el-input :model-value="currentUser.lastLoginAt ? formatBeijingTime(currentUser.lastLoginAt) : '首次登录'" disabled />
               </el-form-item>
               <el-button type="primary" :icon="CircleCheck" @click="submitProfile">保存资料</el-button>
             </el-form>
@@ -1101,6 +1147,15 @@
         </template>
       </el-dialog>
 
+      <el-dialog v-model="reportPreviewVisible" :title="selectedReport?.reportTitle || '报告预览'" width="920px" class="report-preview-dialog">
+        <section v-if="selectedReport" class="report-preview" v-html="selectedReport.reportHtml"></section>
+        <el-empty v-else description="暂无报告内容" />
+        <template #footer>
+          <el-button @click="reportPreviewVisible = false">关闭</el-button>
+          <el-button v-if="selectedReport" type="success" @click="download(selectedReport.id)">下载 PDF</el-button>
+        </template>
+      </el-dialog>
+
       <footer class="app-footer">{{ disclaimer }}</footer>
     </section>
   </main>
@@ -1131,7 +1186,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { downloadReport, postForm, request, uploadAdminDataset } from './api/client'
+import { apiErrorMessage, downloadReport, postForm, request, uploadAdminDataset } from './api/client'
 import DashboardChart from './components/DashboardChart.vue'
 import DataSeedManagement from './components/DataSeedManagement.vue'
 import DiseaseInfo from './components/DiseaseInfo.vue'
@@ -1194,6 +1249,7 @@ type ModelVersion = {
   evaluationDatasetName?: string
   evaluationDatasetSource?: string
   evaluationDatasetUrl?: string
+  modelPath?: string
   active: boolean
   createdAt: string
 }
@@ -1348,7 +1404,9 @@ const predictionResult = ref<Prediction | null>(null)
 const history = ref<Prediction[]>([])
 const reports = ref<Report[]>([])
 const selectedReport = ref<Report | null>(null)
+const reportPreviewVisible = ref(false)
 const models = ref<ModelVersion[]>([])
+const modelsLoading = ref(false)
 const auditLogs = ref<AuditLog[]>([])
 const adminUsers = ref<AdminUser[]>([])
 const adminSummary = ref<AdminSummary>({})
@@ -1405,6 +1463,7 @@ const screenNow = ref(formatScreenTime(new Date()))
 let registerCodeTimer: number | undefined
 let resetCodeTimer: number | undefined
 let screenClockTimer: number | undefined
+let authExpiredNotified = false
 
 const userFilters = reactive({
   keyword: '',
@@ -1500,7 +1559,7 @@ const trainingForm = reactive<{
   regLambda: 1,
   minChildWeight: 1,
   testSize: 0.2,
-  maxTrainSamples: 10000,
+  maxTrainSamples: 2048,
   device: 'auto',
   ensembleSize: 8,
   contextSize: 2048,
@@ -1550,10 +1609,10 @@ const adminManagementViews = ['modelManagement', 'models', 'datasets', 'training
 const navItems: NavItem[] = [
   { key: 'dashboard', label: '仪表盘', icon: DataAnalysis, roles: ['PATIENT'] },
   { key: 'doctorConsole', label: '医生控制台', icon: Monitor, roles: ['DOCTOR'] },
-  { key: 'patientRecords', label: '患者风险记录', icon: TrendCharts, roles: ['DOCTOR'] },
+  { key: 'patientRecords', label: '患者风险记录', icon: TrendCharts, roles: ['DOCTOR', 'ADMIN'] },
   { key: 'predict', label: '疾病预测', icon: FirstAidKit, roles: ['PATIENT', 'DOCTOR', 'ADMIN'] },
   { key: 'history', label: '我的历史', icon: TrendCharts, roles: ['PATIENT'] },
-  { key: 'reports', label: '报告中心', icon: Document, roles: ['PATIENT', 'DOCTOR'] },
+  { key: 'reports', label: '报告中心', icon: Document, roles: ['PATIENT', 'DOCTOR', 'ADMIN'] },
   { key: 'qa', label: '智能问答', icon: ChatDotRound, roles: ['PATIENT', 'DOCTOR', 'ADMIN'] },
   { key: 'documents', label: '文档管理', icon: Document, roles: ['DOCTOR', 'ADMIN'] },
   { key: 'diseases', label: '疾病信息', icon: FirstAidKit, roles: ['DOCTOR', 'ADMIN'] },
@@ -1577,7 +1636,7 @@ const navGroups: NavGroup[] = [
   { key: 'patient-main', label: '健康服务', roles: ['PATIENT'], itemKeys: ['dashboard', 'predict', 'history', 'reports', 'qa'] },
   { key: 'doctor-main', label: '诊疗工作台', roles: ['DOCTOR'], itemKeys: ['doctorConsole', 'patientRecords', 'predict', 'reports', 'qa'] },
   { key: 'doctor-knowledge', label: '知识库', roles: ['DOCTOR'], itemKeys: ['documents', 'diseases', 'medicalCases', 'graphVisualization'] },
-  { key: 'admin-overview', label: '总览与分析', roles: ['ADMIN'], itemKeys: ['adminConsole', 'visualization', 'predict', 'qa'] },
+  { key: 'admin-overview', label: '总览与分析', roles: ['ADMIN'], itemKeys: ['adminConsole', 'patientRecords', 'reports', 'visualization', 'predict', 'qa'] },
   { key: 'admin-knowledge', label: '知识库与图谱', roles: ['ADMIN'], itemKeys: ['documents', 'diseases', 'medicalCases', 'graphManagement', 'graphVisualization', 'dataSeeds'] },
   { key: 'admin-models', label: '模型与数据', roles: ['ADMIN'], itemKeys: ['models', 'datasets', 'training', 'evaluations', 'feedback', 'llmProfiles'] },
   { key: 'admin-system', label: '系统管理', roles: ['ADMIN'], itemKeys: ['users', 'audit'] }
@@ -1681,6 +1740,20 @@ const evaluationDatasetsForTraining = computed(() => {
 const modelTypeOptions = computed(() => modelCapabilities.value.length ? modelCapabilities.value : [
   { modelType: 'xgboost', label: 'XGBoost 稳定基线', available: true }
 ])
+const selectableModels = computed(() => {
+  const seen = new Set<number>()
+  return models.value
+    .filter((item) => item && Number.isFinite(Number(item.id)) && Boolean(item.version))
+    .filter((item) => {
+      if (seen.has(item.id)) return false
+      seen.add(item.id)
+      return true
+    })
+})
+const editingProtectedAdmin = computed(() => {
+  const row = adminUsers.value.find((item) => item.id === userEditingId.value)
+  return isProtectedAdminUser(row)
+})
 const selectedTrainingJob = computed(() => trainingJobs.value.find((item) => item.id === selectedTrainingJobId.value) || null)
 const adminRecentAuditLogs = computed(() => adminSummary.value.recentAuditLogs || auditLogs.value.slice(0, 8))
 const doctorHighRiskRows = computed(() => {
@@ -1752,6 +1825,7 @@ const modelMetricChartOption = computed(() => {
   }
 })
 onMounted(async () => {
+  window.addEventListener('medrisk-auth-expired', handleAuthExpired)
   screenClockTimer = window.setInterval(() => {
     screenNow.value = formatScreenTime(new Date())
   }, 1000)
@@ -1769,6 +1843,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('medrisk-auth-expired', handleAuthExpired)
   trainingPollers.forEach((timer) => window.clearInterval(timer))
   trainingPollers.clear()
   if (registerCodeTimer) window.clearInterval(registerCodeTimer)
@@ -1998,14 +2073,24 @@ function canAccessView(view: string) {
 async function loadInitialData() {
   if (!currentUser.value) return
   if (currentUser.value.role === 'ADMIN') {
-    await Promise.all([loadAdminConsole(), loadAdmin(), loadNeo4jHealth()])
+    await loadAdminConsole()
+    void loadNeo4jHealth()
+    window.setTimeout(() => {
+      void loadAdminViewData(activeView.value, false)
+    }, 0)
     return
   }
   if (currentUser.value.role === 'DOCTOR') {
-    await Promise.all([loadDoctorConsole(), loadReports()])
+    await loadDoctorConsole()
+    window.setTimeout(() => {
+      void loadReports()
+    }, 0)
     return
   }
-  await Promise.all([loadHistory(), loadReports()])
+  await loadHistory()
+  window.setTimeout(() => {
+    void loadReports()
+  }, 0)
 }
 
 async function submitAuth() {
@@ -2019,13 +2104,14 @@ async function submitAuth() {
     const payload = { ...authForm, role: authMode.value === '注册' && authForm.role === 'ADMIN' ? 'PATIENT' : authForm.role }
     const data = await request<{ token: string; user: UserInfo }>('post', endpoint, payload)
     localStorage.setItem('medrisk-token', data.token)
+    authExpiredNotified = false
     currentUser.value = data.user
     syncProfileForm()
     activeView.value = defaultViewForRole(data.user.role)
     ElMessage.success('登录成功')
     await loadInitialData()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '认证失败')
+    showRequestError(error, '认证失败')
   } finally {
     loading.value = false
   }
@@ -2034,10 +2120,35 @@ async function submitAuth() {
 function logout() {
   localStorage.removeItem('medrisk-token')
   stopNeo4jHealthPolling()
+  trainingPollers.forEach((timer) => window.clearInterval(timer))
+  trainingPollers.clear()
   currentUser.value = null
   neo4jHealth.value = {}
   predictionResult.value = null
   activeView.value = 'dashboard'
+}
+
+function handleAuthExpired(event?: Event) {
+  if (authExpiredNotified) return
+  authExpiredNotified = true
+  const message = event instanceof CustomEvent && event.detail?.message
+    ? String(event.detail.message)
+    : '登录状态已失效，请重新登录'
+  stopNeo4jHealthPolling()
+  trainingPollers.forEach((timer) => window.clearInterval(timer))
+  trainingPollers.clear()
+  loading.value = false
+  currentUser.value = null
+  predictionResult.value = null
+  selectedReport.value = null
+  reportPreviewVisible.value = false
+  activeView.value = 'dashboard'
+  ElMessage.warning(message)
+}
+
+function showRequestError(error: unknown, fallback: string) {
+  const message = apiErrorMessage(error, fallback)
+  if (message) ElMessage.error(message)
 }
 
 function syncProfileForm() {
@@ -2058,7 +2169,7 @@ async function submitProfile() {
     syncProfileForm()
     ElMessage.success('个人资料已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '资料保存失败')
+    showRequestError(error, '资料保存失败')
   } finally {
     loading.value = false
   }
@@ -2073,7 +2184,7 @@ async function handleAvatarUpload(file: UploadFile) {
     syncProfileForm()
     ElMessage.success('头像已更新')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '头像上传失败')
+    showRequestError(error, '头像上传失败')
   }
 }
 
@@ -2100,7 +2211,7 @@ async function submitPassword() {
     passwordForm.confirmPassword = ''
     ElMessage.success('密码已更新')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '密码更新失败')
+    showRequestError(error, '密码更新失败')
   }
 }
 
@@ -2119,8 +2230,8 @@ async function changeView(view: string) {
   if (view === 'reports') await loadReports()
   if (view === 'adminConsole') await loadAdminConsole()
   if (view === 'users') await loadAdminUsers()
-  if (view === 'audit') await loadAdmin()
-  if (adminManagementViews.includes(view)) await loadAdmin()
+  if (view === 'audit') await loadAuditLogs(true)
+  if (adminManagementViews.includes(view)) await loadAdminViewData(view, true)
 }
 
 async function submitPrediction() {
@@ -2131,7 +2242,7 @@ async function submitPrediction() {
     ElMessage.success('预测完成')
     await loadHistory()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '预测失败')
+    showRequestError(error, '预测失败')
   } finally {
     loading.value = false
   }
@@ -2160,7 +2271,21 @@ async function loadHistory() {
 async function loadReports() {
   if (!currentUser.value) return
   reports.value = await request<Report[]>('get', '/reports')
-  selectedReport.value ||= reports.value[0] || null
+  if (!reports.value.length) {
+    selectedReport.value = null
+  } else if (!selectedReport.value || !reports.value.some((item) => item.id === selectedReport.value?.id)) {
+    selectedReport.value = reports.value[0]
+  }
+}
+
+async function previewReport(reportId: number) {
+  try {
+    const report = await request<Report>('get', `/reports/${reportId}`)
+    selectedReport.value = report
+    reportPreviewVisible.value = true
+  } catch (error) {
+    showRequestError(error, '报告预览加载失败')
+  }
 }
 
 async function loadDoctorConsole() {
@@ -2194,37 +2319,212 @@ async function loadAdminUsers() {
   adminUsers.value = await request<AdminUser[]>('get', `/admin/users${query ? `?${query}` : ''}`)
 }
 
+async function loadAuditLogs(showError = false): Promise<AuditLog[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return auditLogs.value
+  try {
+    const data = await request<AuditLog[]>('get', '/admin/audit-logs')
+    auditLogs.value = Array.isArray(data) ? data : []
+    return auditLogs.value
+  } catch (error) {
+    if (showError) showRequestError(error, '审计日志加载失败')
+    return auditLogs.value
+  }
+}
+
+async function loadModels(showError = false): Promise<ModelVersion[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return models.value
+  modelsLoading.value = true
+  try {
+    const data = await request<ModelVersion[]>('get', '/admin/models')
+    models.value = Array.isArray(data) ? data : []
+    return models.value
+  } catch (error) {
+    if (showError) {
+      showRequestError(error, '模型列表加载失败')
+    }
+    return models.value
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+async function loadDatasets(showError = false): Promise<TrainingDataset[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return datasets.value
+  try {
+    const data = await request<TrainingDataset[]>('get', '/admin/datasets')
+    datasets.value = Array.isArray(data) ? data : []
+    syncDatasetDefaults()
+    return datasets.value
+  } catch (error) {
+    if (showError) showRequestError(error, '数据集加载失败')
+    return datasets.value
+  }
+}
+
+async function loadTrainingJobs(showError = false): Promise<TrainingJob[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return trainingJobs.value
+  try {
+    const data = await request<TrainingJob[]>('get', '/admin/training-jobs')
+    trainingJobs.value = Array.isArray(data) ? data : []
+    trainingJobs.value.filter((item) => !isTrainingDone(item.trainStatus)).forEach((item) => pollTrainingJob(item.id))
+    return trainingJobs.value
+  } catch (error) {
+    if (showError) showRequestError(error, '训练任务加载失败')
+    return trainingJobs.value
+  }
+}
+
+async function loadModelCapabilities(showError = false): Promise<ModelCapability[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return modelCapabilities.value
+  try {
+    const data = await request<ModelCapability[]>('get', '/admin/model-capabilities')
+    if (Array.isArray(data) && data.length) {
+      modelCapabilities.value = data
+    } else {
+      modelCapabilities.value = capabilityCheckFailedOptions()
+    }
+    return modelCapabilities.value
+  } catch (error) {
+    modelCapabilities.value = capabilityCheckFailedOptions()
+    if (showError) showRequestError(error, '模型能力加载失败')
+    return modelCapabilities.value
+  }
+}
+
+async function loadLlmProfiles(showError = false): Promise<LlmProfile[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return llmProfiles.value
+  try {
+    const data = await request<LlmProfile[]>('get', '/admin/llm-profiles')
+    llmProfiles.value = Array.isArray(data) ? data : []
+    return llmProfiles.value
+  } catch (error) {
+    if (showError) showRequestError(error, '大模型配置加载失败')
+    return llmProfiles.value
+  }
+}
+
+async function loadEvaluations(showError = false): Promise<ModelEvaluation[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return evaluations.value
+  try {
+    const data = await request<ModelEvaluation[]>('get', '/admin/model-evaluations')
+    evaluations.value = Array.isArray(data) ? data : []
+    return evaluations.value
+  } catch (error) {
+    if (showError) showRequestError(error, '模型评估记录加载失败')
+    return evaluations.value
+  }
+}
+
+async function loadFeedback(showError = false): Promise<ModelFeedback[]> {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return feedbackList.value
+  try {
+    const data = await request<ModelFeedback[]>('get', '/admin/model-feedback')
+    feedbackList.value = Array.isArray(data) ? data : []
+    return feedbackList.value
+  } catch (error) {
+    if (showError) showRequestError(error, '模型反馈加载失败')
+    return feedbackList.value
+  }
+}
+
+async function loadAdminViewData(view: string, showError = false) {
+  if (!currentUser.value || currentUser.value.role !== 'ADMIN') return
+  if (view === 'models') {
+    await loadModels(showError)
+    return
+  }
+  if (view === 'datasets') {
+    await loadDatasets(showError)
+    return
+  }
+  if (view === 'training') {
+    await Promise.all([
+      loadDatasets(false),
+      loadModelCapabilities(false),
+      loadTrainingJobs(showError)
+    ])
+    return
+  }
+  if (view === 'evaluations') {
+    await Promise.all([
+      loadModels(false),
+      loadDatasets(false),
+      loadEvaluations(showError)
+    ])
+    return
+  }
+  if (view === 'feedback') {
+    await Promise.all([
+      loadModels(false),
+      loadEvaluations(false),
+      loadFeedback(showError)
+    ])
+    return
+  }
+  if (view === 'llmProfiles') {
+    await loadLlmProfiles(showError)
+    return
+  }
+  if (view === 'modelManagement') {
+    await Promise.all([
+      loadModels(false),
+      loadDatasets(false),
+      loadTrainingJobs(false),
+      loadEvaluations(false),
+      loadFeedback(false),
+      loadModelCapabilities(false),
+      loadLlmProfiles(false)
+    ])
+  }
+}
+
+async function refreshCurrentAdminSection() {
+  if (activeView.value === 'audit') {
+    await loadAuditLogs(true)
+    return
+  }
+  if (adminManagementViews.includes(activeView.value)) {
+    await loadAdminViewData(activeView.value, true)
+  }
+}
+
+async function handleModelSelectVisible(visible: boolean) {
+  if (visible && !selectableModels.value.length) {
+    await loadModels(true)
+  }
+}
+
+function capabilityCheckFailedOptions() {
+  return modelCapabilities.value.map((item) => {
+    if (item.available || item.reason !== '等待模型服务能力检查') return item
+    return { ...item, reason: '模型服务能力检查失败，请确认后端与模型服务已启动后刷新' }
+  })
+}
+
 async function loadAdmin() {
   if (!currentUser.value || currentUser.value.role !== 'ADMIN') return
-  try {
-    const [modelData, auditData, datasetData, jobData, evaluationData, feedbackData, capabilityData, llmProfileData] = await Promise.all([
-      request<ModelVersion[]>('get', '/admin/models'),
-      request<AuditLog[]>('get', '/admin/audit-logs'),
-      request<TrainingDataset[]>('get', '/admin/datasets'),
-      request<TrainingJob[]>('get', '/admin/training-jobs'),
-      request<ModelEvaluation[]>('get', '/admin/model-evaluations'),
-      request<ModelFeedback[]>('get', '/admin/model-feedback'),
-      request<ModelCapability[]>('get', '/admin/model-capabilities'),
-      request<LlmProfile[]>('get', '/admin/llm-profiles')
-    ])
-    models.value = modelData
-    auditLogs.value = auditData
-    datasets.value = datasetData
-    trainingJobs.value = jobData
-    evaluations.value = evaluationData
-    feedbackList.value = feedbackData
+  const [modelData, auditData, datasetData, jobData, evaluationData, feedbackData, capabilityData, llmProfileData] = await Promise.all([
+    loadModels(false),
+    loadAuditLogs(false),
+    loadDatasets(false),
+    loadTrainingJobs(false),
+    loadEvaluations(false),
+    loadFeedback(false),
+    loadModelCapabilities(false),
+    loadLlmProfiles(false)
+  ])
+  if (modelData) models.value = modelData
+  if (auditData) auditLogs.value = auditData
+  if (datasetData) datasets.value = datasetData
+  if (jobData) trainingJobs.value = jobData
+  if (evaluationData) evaluations.value = evaluationData
+  if (feedbackData) feedbackList.value = feedbackData
+  if (capabilityData && capabilityData.length) {
     modelCapabilities.value = capabilityData
-    llmProfiles.value = llmProfileData
-    trainingJobs.value.filter((item) => !isTrainingDone(item.trainStatus)).forEach((item) => pollTrainingJob(item.id))
-  } catch {
-    models.value = []
-    auditLogs.value = []
-    datasets.value = []
-    trainingJobs.value = []
-    evaluations.value = []
-    feedbackList.value = []
-    llmProfiles.value = []
+  } else {
+    modelCapabilities.value = capabilityCheckFailedOptions()
   }
+  if (llmProfileData) llmProfiles.value = llmProfileData
 }
 
 async function sendRegisterCode() {
@@ -2250,7 +2550,7 @@ async function sendEmailCode(endpoint: string, email: string, cooldown: typeof r
     ElMessage.success('验证码已发送，请查收邮箱')
     startCodeCooldown(cooldown)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '验证码发送失败')
+    showRequestError(error, '验证码发送失败')
   } finally {
     codeSending.value = false
   }
@@ -2293,7 +2593,7 @@ async function submitPasswordReset() {
     resetForm.newPassword = ''
     resetForm.confirmPassword = ''
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '密码重置失败')
+    showRequestError(error, '密码重置失败')
   } finally {
     loading.value = false
   }
@@ -2306,24 +2606,42 @@ async function submitUser() {
   }
   loading.value = true
   try {
-    const payload = {
-      username: userForm.username,
-      email: userForm.email,
-      name: userForm.name,
-      phone: userForm.phone,
+    const payload: Record<string, string> = {
+      username: userForm.username.trim(),
+      email: userForm.email.trim(),
+      name: userForm.name.trim(),
+      phone: userForm.phone.trim(),
       role: userForm.role,
-      status: userForm.status,
-      password: userEditingId.value ? undefined : userForm.password
+      status: userForm.status
+    }
+    const password = userForm.password.trim()
+    if (!userEditingId.value || password) {
+      payload.password = password || '123456'
     }
     const user = userEditingId.value
       ? await request<AdminUser>('put', `/admin/users/${userEditingId.value}`, payload)
       : await request<AdminUser>('post', '/admin/users', payload)
     adminUsers.value = [user, ...adminUsers.value.filter((item) => item.id !== user.id)]
+    if (currentUser.value?.id === user.id) {
+      currentUser.value = {
+        ...currentUser.value,
+        username: user.username,
+        email: user.email,
+        name: user.name,
+        phone: user.phone || '',
+        role: user.role,
+        status: user.status
+      }
+      syncProfileForm()
+      if (!canAccessView(activeView.value)) {
+        activeView.value = defaultViewForRole(user.role)
+      }
+    }
     resetUserForm()
     await loadAdminConsole()
     ElMessage.success('用户已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '用户保存失败')
+    showRequestError(error, '用户保存失败')
   } finally {
     loading.value = false
   }
@@ -2359,7 +2677,7 @@ async function toggleUserStatus(row: AdminUser) {
     await loadAdminConsole()
     ElMessage.success(nextStatus === 'ACTIVE' ? '用户已启用' : '用户已禁用')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '用户状态更新失败')
+    showRequestError(error, '用户状态更新失败')
   }
 }
 
@@ -2370,7 +2688,7 @@ async function resetUserPassword(id: number) {
     ElMessage.success('密码已重置为 123456')
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error instanceof Error ? error.message : '密码重置失败')
+      showRequestError(error, '密码重置失败')
     }
   }
 }
@@ -2384,7 +2702,7 @@ async function deleteUser(id: number) {
     ElMessage.success('用户已删除')
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error instanceof Error ? error.message : '用户删除失败')
+      showRequestError(error, '用户删除失败')
     }
   }
 }
@@ -2409,12 +2727,14 @@ async function submitDataset() {
     formData.append('diseaseType', datasetForm.diseaseType)
     formData.append('description', datasetForm.description)
     formData.append('file', selectedDatasetFile.value)
-    await uploadAdminDataset(formData)
+    const dataset = await uploadAdminDataset(formData) as TrainingDataset
+    upsertDataset(dataset)
+    syncDatasetDefaults()
     selectedDatasetFile.value = null
     ElMessage.success('数据集已上传并完成校验')
-    await loadAdmin()
+    await loadAdminViewData(activeView.value, false)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '数据集上传失败')
+    showRequestError(error, '数据集上传失败')
   } finally {
     loading.value = false
   }
@@ -2426,19 +2746,19 @@ async function validateDataset(id: number) {
     upsertDataset(dataset)
     ElMessage.success('数据集校验完成')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '数据集校验失败')
+    showRequestError(error, '数据集校验失败')
   }
 }
 
 async function deleteDataset(id: number) {
   try {
-    await ElMessageBox.confirm('确认删除该数据集？已被训练任务或评估引用的数据集不会被删除。', '删除数据集', { type: 'warning' })
-    await request('delete', `/admin/datasets/${id}`)
-    datasets.value = datasets.value.filter((item) => item.id !== id)
-    ElMessage.success('数据集已删除')
+    await ElMessageBox.confirm('确认删除该数据集？系统会同步删除引用它的训练任务、评估记录和反馈。', '删除数据集', { type: 'warning' })
+    const result = await request<{ deletedTrainingJobs?: number; deletedEvaluations?: number; deletedFeedback?: number }>('delete', `/admin/datasets/${id}`)
+    await loadAdminViewData(activeView.value, false)
+    ElMessage.success(`数据集已删除，关联训练任务 ${result.deletedTrainingJobs || 0} 条，评估 ${result.deletedEvaluations || 0} 条`)
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error instanceof Error ? error.message : '数据集删除失败')
+      showRequestError(error, '数据集删除失败')
     }
   }
 }
@@ -2448,9 +2768,26 @@ async function importPublicDatasets() {
   try {
     const imported = await request<TrainingDataset[]>('post', '/admin/datasets/import-public')
     imported.forEach(upsertDataset)
+    syncDatasetDefaults()
     ElMessage.success(`已导入 ${imported.length} 个公开训练/评估数据集`)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '公开数据集导入失败')
+    showRequestError(error, '公开数据集导入失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function pruneSmallDatasets() {
+  try {
+    await ElMessageBox.confirm('确认清理小样本演示/UCI 数据集？系统会同步删除相关训练任务、评估记录和反馈。', '清理小样本数据集', { type: 'warning' })
+    loading.value = true
+    const result = await request<{ deletedDatasets?: number; deletedTrainingJobs?: number; deletedEvaluations?: number; deletedFeedback?: number }>('post', '/admin/datasets/prune-small')
+    await loadAdminViewData(activeView.value, false)
+    ElMessage.success(`已清理 ${result.deletedDatasets || 0} 个小样本数据集`)
+  } catch (error) {
+    if (error !== 'cancel') {
+      showRequestError(error, '小样本数据集清理失败')
+    }
   } finally {
     loading.value = false
   }
@@ -2540,14 +2877,22 @@ function trainingHyperparameters() {
 }
 
 async function createTrainingJob() {
+  if (!trainingForm.datasetId && !validDatasets.value.length) {
+    await loadDatasets(true)
+  }
+  syncDatasetDefaults()
   if (!trainingForm.datasetId) {
     ElMessage.warning('请选择已校验的数据集')
     return
   }
+  await loadModelCapabilities(false)
   const capability = modelCapabilities.value.find((item) => item.modelType === trainingForm.modelType)
   if (capability && !capability.available) {
     ElMessage.warning(capability.reason || '该模型类型当前不可用')
     return
+  }
+  if (!trainingForm.modelName.trim()) {
+    trainingForm.modelName = `${modelTypeText(trainingForm.modelType)} 训练模型`
   }
   loading.value = true
   try {
@@ -2566,9 +2911,10 @@ async function createTrainingJob() {
     selectedTrainingJobId.value = job.id
     await loadTrainingHistory(job.id)
     if (!isTrainingDone(job.trainStatus)) pollTrainingJob(job.id)
+    if (job.trainStatus === '训练成功') await loadModels(false)
     ElMessage.success('训练任务已创建')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '训练任务创建失败')
+    showRequestError(error, '训练任务创建失败')
   } finally {
     loading.value = false
   }
@@ -2580,9 +2926,12 @@ async function refreshTrainingJob(id: number) {
     upsertTrainingJob(job)
     selectedTrainingJobId.value = id
     await loadTrainingHistory(id)
-    if (isTrainingDone(job.trainStatus)) clearTrainingPoller(id)
+    if (isTrainingDone(job.trainStatus)) {
+      clearTrainingPoller(id)
+      if (job.trainStatus === '训练成功') await loadModels(false)
+    }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '训练状态刷新失败')
+    showRequestError(error, '训练状态刷新失败')
   }
 }
 
@@ -2593,7 +2942,7 @@ async function stopTrainingJob(id: number) {
     clearTrainingPoller(id)
     ElMessage.success('训练任务已终止')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '训练任务终止失败')
+    showRequestError(error, '训练任务终止失败')
   }
 }
 
@@ -2615,7 +2964,10 @@ function pollTrainingJob(id: number) {
       if (selectedTrainingJobId.value === id) {
         trainingHistory.value = await request<TrainingHistory>('get', `/admin/training-jobs/${id}/history`)
       }
-      if (isTrainingDone(job.trainStatus)) clearTrainingPoller(id)
+      if (isTrainingDone(job.trainStatus)) {
+        clearTrainingPoller(id)
+        if (job.trainStatus === '训练成功') await loadModels(false)
+      }
     } catch {
       clearTrainingPoller(id)
     }
@@ -2638,7 +2990,30 @@ async function activateAdminModel(id: number) {
     }))
     ElMessage.success('模型版本已启用')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '模型启用失败，请确认模型服务已启动')
+    showRequestError(error, '模型启用失败，请确认模型服务已启动')
+  }
+}
+
+async function deleteModelVersion(model: ModelVersion) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除模型版本「${model.version}」？该操作会同步删除对应训练任务、模型评估和模型反馈。`,
+      '删除模型版本',
+      { type: 'warning' }
+    )
+    const result = await request<{ deleted: boolean; id: number; deletedJobs: number; deletedEvaluations: number; deletedFeedback: number }>('delete', `/admin/models/${model.id}`)
+    models.value = models.value.filter((item) => item.id !== model.id)
+    trainingJobs.value = trainingJobs.value.filter((item) => item.modelVersion !== model.version)
+    evaluations.value = evaluations.value.filter((item) => item.modelVersionId !== model.id)
+    feedbackList.value = feedbackList.value.filter((item) => item.modelVersionId !== model.id)
+    if (evaluationForm.modelVersionId === model.id) evaluationForm.modelVersionId = undefined
+    if (feedbackForm.modelVersionId === model.id) feedbackForm.modelVersionId = undefined
+    await Promise.all([loadModels(false), loadTrainingJobs(false), loadEvaluations(false), loadFeedback(false)])
+    ElMessage.success(`模型已删除，同步删除 ${result.deletedJobs} 个训练任务、${result.deletedEvaluations} 条评估、${result.deletedFeedback} 条反馈`)
+  } catch (error) {
+    if (error !== 'cancel') {
+      showRequestError(error, '模型删除失败')
+    }
   }
 }
 
@@ -2649,8 +3024,11 @@ function prepareEvaluation(modelVersionId: number) {
 }
 
 async function createEvaluation() {
+  if (!selectableModels.value.length) {
+    await loadModels(true)
+  }
   if (!evaluationForm.modelVersionId || !evaluationForm.datasetId) {
-    ElMessage.warning('请选择模型版本和评估数据集')
+    ElMessage.warning(selectableModels.value.length ? '请选择模型版本和评估数据集' : '模型列表为空，请先完成训练或刷新模型列表')
     return
   }
   loading.value = true
@@ -2659,13 +3037,16 @@ async function createEvaluation() {
     evaluations.value = [evaluation, ...evaluations.value.filter((item) => item.id !== evaluation.id)]
     ElMessage.success('模型评估完成')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '模型评估失败，请确认模型服务已启动')
+    showRequestError(error, '模型评估失败，请确认模型服务已启动')
   } finally {
     loading.value = false
   }
 }
 
 async function submitFeedback() {
+  if (!selectableModels.value.length) {
+    await loadModels(false)
+  }
   if (!feedbackForm.content.trim()) {
     ElMessage.warning('请填写反馈内容')
     return
@@ -2680,7 +3061,7 @@ async function submitFeedback() {
     resetFeedbackForm()
     ElMessage.success('反馈已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '反馈保存失败')
+    showRequestError(error, '反馈保存失败')
   } finally {
     loading.value = false
   }
@@ -2704,7 +3085,7 @@ async function deleteFeedback(id: number) {
     ElMessage.success('反馈已删除')
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error instanceof Error ? error.message : '反馈删除失败')
+      showRequestError(error, '反馈删除失败')
     }
   }
 }
@@ -2730,7 +3111,7 @@ async function submitLlmProfile() {
     resetLlmProfileForm()
     ElMessage.success('大模型配置已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '大模型配置保存失败')
+    showRequestError(error, '大模型配置保存失败')
   } finally {
     loading.value = false
   }
@@ -2749,13 +3130,14 @@ function editLlmProfile(row: LlmProfile) {
   llmProfileForm.defaultProfile = Boolean(row.defaultProfile)
 }
 
-async function disableLlmProfile(id: number) {
+async function deleteLlmProfile(id: number) {
   try {
+    await ElMessageBox.confirm('确认删除该大模型 API 配置？删除后不会再出现在问答模型列表中。', '删除大模型配置', { type: 'warning' })
     await request('delete', `/admin/llm-profiles/${id}`)
-    llmProfiles.value = llmProfiles.value.map((item) => (item.id === id ? { ...item, enabled: false } : item))
-    ElMessage.success('大模型配置已停用')
+    llmProfiles.value = llmProfiles.value.filter((item) => item.id !== id)
+    ElMessage.success('大模型配置已删除')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '大模型配置停用失败')
+    if (error !== 'cancel') showRequestError(error, '大模型配置删除失败')
   }
 }
 
@@ -2821,7 +3203,7 @@ async function loadReportConversationMessages() {
     reportMessages.value = detail.messages || []
     selectedQaMessageIds.value = reportMessages.value.slice(-3).map((item) => item.id)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '问诊记录加载失败')
+    showRequestError(error, '问诊记录加载失败')
   }
 }
 
@@ -2843,7 +3225,7 @@ async function submitReportGeneration(includeQa: boolean) {
     reportDialogVisible.value = false
     ElMessage.success('报告已生成')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '报告生成失败')
+    showRequestError(error, '报告生成失败')
   } finally {
     loading.value = false
   }
@@ -2857,6 +3239,43 @@ async function download(reportId: number) {
   link.download = `MedRisk-AI-report-${reportId}.pdf`
   link.click()
   URL.revokeObjectURL(blobUrl)
+}
+
+async function deletePrediction(recordId: number) {
+  try {
+    await ElMessageBox.confirm('确认删除该预测历史？该操作会同步删除这条预测生成的报告。', '删除预测历史', { type: 'warning' })
+    const result = await request<{ deleted: boolean; id: number; deletedReports: number }>('delete', `/history/predictions/${recordId}`)
+    history.value = history.value.filter((item) => item.recordId !== recordId)
+    reports.value = reports.value.filter((item) => item.predictionId !== recordId)
+    if (selectedReport.value?.predictionId === recordId) {
+      selectedReport.value = reports.value[0] || null
+    }
+    if (predictionResult.value?.recordId === recordId) {
+      predictionResult.value = null
+    }
+    ElMessage.success(result.deletedReports > 0 ? `预测历史已删除，并同步删除 ${result.deletedReports} 份报告` : '预测历史已删除')
+  } catch (error) {
+    if (error !== 'cancel') {
+      showRequestError(error, '预测历史删除失败')
+    }
+  }
+}
+
+async function deleteReport(reportId: number) {
+  try {
+    await ElMessageBox.confirm('确认删除该报告？对应预测历史会保留。', '删除报告', { type: 'warning' })
+    await request('delete', `/reports/${reportId}`)
+    reports.value = reports.value.filter((item) => item.id !== reportId)
+    if (selectedReport.value?.id === reportId) {
+      selectedReport.value = reports.value[0] || null
+      reportPreviewVisible.value = false
+    }
+    ElMessage.success('报告已删除')
+  } catch (error) {
+    if (error !== 'cancel') {
+      showRequestError(error, '报告删除失败')
+    }
+  }
 }
 
 function riskText(label: RiskLabel | string) {
@@ -2881,6 +3300,25 @@ function diseaseText(value: string) {
 function modelTypeText(value?: string) {
   const normalized = value || 'xgboost'
   return modelCapabilities.value.find((item) => item.modelType === normalized)?.label || normalized
+}
+
+function syncDatasetDefaults() {
+  const valid = validDatasets.value
+  if (!valid.length) return
+  if (!trainingForm.datasetId || !valid.some((item) => item.id === trainingForm.datasetId)) {
+    trainingForm.datasetId = valid[0].id
+  }
+  if (!evaluationForm.datasetId || !valid.some((item) => item.id === evaluationForm.datasetId)) {
+    evaluationForm.datasetId = valid[0].id
+  }
+}
+
+function isProtectedAdminUser(row?: Pick<AdminUser, 'username'> | null) {
+  return (row?.username || '').trim().toLowerCase() === 'admin'
+}
+
+function modelOptionLabel(item: ModelVersion) {
+  return `${item.diseaseName || diseaseText(item.diseaseType)} · ${modelTypeText(item.modelType)} · ${item.version}`
 }
 
 function usesEstimatorCount(modelType: string) {
@@ -2963,6 +3401,31 @@ function formatScreenTime(value: Date) {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`
 }
 
+function formatBeijingTime(value?: string) {
+  if (!value) return '-'
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
+  if (!hasZone) {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/)
+    if (match) {
+      return `${match[1]}-${match[2]}-${match[3]} ${match[4] || '00'}:${match[5] || '00'}:${match[6] || '00'}`
+    }
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(date)
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value || ''
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`
+}
+
 function pieOption(data: NameValue[], colors: string[]) {
   const chartData = data.length ? data : [{ name: '暂无数据', value: 0 }]
   return {
@@ -3004,3 +3467,4 @@ function barSeriesForScreen(name: string, data: number[], color: string) {
   }
 }
 </script>
+

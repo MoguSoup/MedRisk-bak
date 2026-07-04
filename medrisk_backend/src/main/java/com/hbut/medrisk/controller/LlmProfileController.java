@@ -58,12 +58,12 @@ public class LlmProfileController {
     }
 
     @DeleteMapping("/api/admin/llm-profiles/{id}")
-    ApiResponse<Map<String, Object>> disable(
+    ApiResponse<Map<String, Object>> delete(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable Long id) {
         UserEntity user = requireAdmin(authorization);
-        profiles.disable(id, user);
-        return ApiResponse.ok(Map.of("disabled", true, "id", id));
+        profiles.delete(id, user);
+        return ApiResponse.ok(Map.of("deleted", true, "id", id));
     }
 
     private UserEntity requireAdmin(String authorization) {

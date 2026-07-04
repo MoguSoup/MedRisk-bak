@@ -9,8 +9,16 @@
         <article v-for="item in conversations" :key="item.id" class="conversation-card" :class="{ active: item.id === activeId }">
           <button class="conversation-open" type="button" @click="openConversation(item.id)">
             <strong>{{ item.title }}</strong>
-            <span>{{ item.updatedAt || item.createdAt }}</span>
+            <span>{{ formatBeijingTime(item.updatedAt || item.createdAt) }}</span>
           </button>
+          <el-button
+            class="conversation-rename"
+            type="primary"
+            text
+            :icon="Edit"
+            aria-label="Rename conversation"
+            @click.stop="renameConversation(item)"
+          />
           <el-button
             class="conversation-delete"
             type="danger"
@@ -132,8 +140,8 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { Delete, Picture, Plus, Promotion } from '@element-plus/icons-vue'
-import { request, streamConversationMessage } from '../api/client'
+import { Delete, Edit, Picture, Plus, Promotion } from '@element-plus/icons-vue'
+import { apiErrorMessage, isAuthExpiredError, request, streamConversationMessage } from '../api/client'
 import SafeMarkdown from './SafeMarkdown.vue'
 
 type Conversation = { id: number; title: string; createdAt: string; updatedAt: string }
@@ -244,7 +252,34 @@ async function deleteConversation(id: number) {
     ElMessage.success('会话已删除')
   } catch (error) {
     if (error !== 'cancel') {
-      ElMessage.error(error instanceof Error ? error.message : '会话删除失败')
+      const errorMessage = apiErrorMessage(error, '会话删除失败')
+      if (errorMessage) ElMessage.error(errorMessage)
+    }
+  }
+}
+
+async function renameConversation(item: Conversation) {
+  try {
+    const result = await ElMessageBox.prompt('请输入新的会话名称', '重命名会话', {
+      inputValue: item.title,
+      inputPlaceholder: '例如：糖尿病用药咨询',
+      inputValidator: (value) => Boolean(value && value.trim()),
+      inputErrorMessage: '会话名称不能为空',
+      confirmButtonText: '保存',
+      cancelButtonText: '取消'
+    })
+    const title = String(result.value || '').trim()
+    if (!title || title === item.title) return
+    const detail = await request<ConversationDetail>('put', `/conversations/${item.id}`, { title })
+    conversations.value = conversations.value.map((row) => (row.id === item.id ? detail.conversation : row))
+    if (activeId.value === item.id) {
+      messages.value = detail.messages
+    }
+    ElMessage.success('会话已重命名')
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errorMessage = apiErrorMessage(error, '会话重命名失败')
+      if (errorMessage) ElMessage.error(errorMessage)
     }
   }
 }
@@ -273,7 +308,8 @@ async function send() {
     const imagePayload = selectedImage.value ? await fileToImagePayload(selectedImage.value) : null
     await sendStream(questionText, imagePayload)
   } catch (error) {
-    ElMessage.error(chatErrorMessage(error))
+    const errorMessage = chatErrorMessage(error)
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
@@ -424,6 +460,7 @@ function scrollMessagesToEnd() {
 }
 
 function chatErrorMessage(error: unknown) {
+  if (isAuthExpiredError(error)) return ''
   const message = error instanceof Error ? error.message : ''
   if (message.toLowerCase().includes('timeout')) {
     return '问答模型响应超时，请稍后重试或检查模型服务状态'
@@ -448,5 +485,30 @@ function visibilityText(value?: string) {
   if (value === 'ADMIN_ONLY') return '管理员'
   if (value === 'DRAFT') return '草稿'
   return '公开'
+}
+
+function formatBeijingTime(value?: string) {
+  if (!value) return '-'
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
+  if (!hasZone) {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/)
+    if (match) {
+      return `${match[1]}-${match[2]}-${match[3]} ${match[4] || '00'}:${match[5] || '00'}:${match[6] || '00'}`
+    }
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(date)
+  const map = Object.fromEntries(parts.map((item) => [item.type, item.value]))
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`
 }
 </script>

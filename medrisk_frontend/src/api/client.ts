@@ -1,8 +1,31 @@
 import axios from 'axios'
 
+export class AuthExpiredError extends Error {
+  constructor(message = '登录状态已失效，请重新登录') {
+    super(message)
+    this.name = 'AuthExpiredError'
+  }
+}
+
+export function isAuthExpiredError(error: unknown): boolean {
+  return error instanceof AuthExpiredError || (error instanceof Error && error.name === 'AuthExpiredError')
+}
+
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (isAuthExpiredError(error)) return ''
+  if (axios.isAxiosError(error)) {
+    const body = error.response?.data
+    const detail = body?.message || body?.error || body?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    if (Array.isArray(detail) && detail.length) return detail.map((item) => item?.msg || String(item)).join('；')
+    if (error.response?.status) return `${fallback}（HTTP ${error.response.status}）`
+  }
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 8000
+  timeout: 30000
 })
 
 api.interceptors.request.use((config) => {
@@ -12,6 +35,30 @@ api.interceptors.request.use((config) => {
   }
   return config
 })
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      const token = localStorage.getItem('medrisk-token')
+      const hadAuthorization = Boolean(token || error.config?.headers?.Authorization)
+      const requestUrl = String(error.config?.url || '')
+      const isLoginAttempt = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/register')
+      const message = error.response.data?.message || error.response.data?.error || '登录状态已失效，请重新登录'
+      if (hadAuthorization && !isLoginAttempt) {
+        expireAuthSession(message)
+        return Promise.reject(new AuthExpiredError(message))
+      }
+      return Promise.reject(new Error(message))
+    }
+    return Promise.reject(error)
+  }
+)
+
+function expireAuthSession(message = '登录状态已失效，请重新登录') {
+  localStorage.removeItem('medrisk-token')
+  window.dispatchEvent(new CustomEvent('medrisk-auth-expired', { detail: { message } }))
+}
 
 export async function request<T>(method: 'get' | 'post' | 'put' | 'delete', url: string, data?: unknown): Promise<T> {
   const response = await api.request({ method, url, data })
@@ -96,6 +143,17 @@ export async function streamConversationMessage(
     },
     body: JSON.stringify(payload)
   })
+  if (response.status === 401) {
+    let message = '登录状态已失效，请重新登录'
+    try {
+      const body = await response.clone().json()
+      message = body?.message || message
+    } catch {
+      // Keep default message when the response body is not JSON.
+    }
+    expireAuthSession(message)
+    throw new AuthExpiredError(message)
+  }
   if (!response.ok || !response.body) {
     throw new Error(`问答流式接口不可用：${response.status}`)
   }
@@ -140,21 +198,9 @@ function dispatchSseBlock(block: string, handlers: StreamHandlers) {
 }
 
 export function downloadReport(reportId: number) {
-  const token = localStorage.getItem('medrisk-token')
-  const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
-  const url = `${baseURL}/reports/${reportId}/download`
-  return axios.get(url, {
-    responseType: 'blob',
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
-  })
+  return api.get(`/reports/${reportId}/download`, { responseType: 'blob' })
 }
 
 export function downloadDocument(documentId: number) {
-  const token = localStorage.getItem('medrisk-token')
-  const baseURL = import.meta.env.VITE_API_BASE_URL || '/api'
-  const url = `${baseURL}/documents/${documentId}/download`
-  return axios.get(url, {
-    responseType: 'blob',
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
-  })
+  return api.get(`/documents/${documentId}/download`, { responseType: 'blob' })
 }

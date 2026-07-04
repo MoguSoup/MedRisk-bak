@@ -104,6 +104,23 @@ public class ConversationService {
     }
 
     @Transactional
+    public Map<String, Object> rename(Long id, String title, UserEntity user) {
+        ConversationEntity row = requireAccessible(id, user);
+        String cleanedTitle = clean(title).replaceAll("\\s+", " ").trim();
+        if (cleanedTitle.isBlank()) {
+            throw new IllegalArgumentException("会话标题不能为空");
+        }
+        if (cleanedTitle.length() > 80) {
+            cleanedTitle = cleanedTitle.substring(0, 80);
+        }
+        row.setTitle(cleanedTitle);
+        row.setUpdatedAt(LocalDateTime.now());
+        conversations.save(row);
+        auditService.log(user.getId(), "RENAME_CONVERSATION", "CONVERSATION", id.toString(), "{}");
+        return detail(row, user);
+    }
+
+    @Transactional
     public Map<String, Object> ask(
             Long conversationId,
             String question,
@@ -138,6 +155,7 @@ public class ConversationService {
         } catch (Exception ignored) {
             graphMatches = new ArrayList<>();
         }
+        graphMatches = dedupeRows(graphMatches, "id", 40);
         List<Map<String, Object>> diseaseMatches = new ArrayList<>(diseaseService.search(cleanedQuestion, user));
         if (diseaseMatches.isEmpty()) {
             for (String keyword : keywords) diseaseMatches.addAll(diseaseService.search(keyword, user));
@@ -165,7 +183,7 @@ public class ConversationService {
         qa.setQuestion(cleanedQuestion);
         qa.setAnswer(llmAnswer.answer());
         qa.setRelatedEntitiesJson(toJson(graphMatches.stream().limit(12).toList()));
-        qa.setGraphContextJson(toJson(graphMatches));
+        qa.setGraphContextJson(toJson(graphMatches.stream().limit(24).toList()));
         qa.setDiseaseInfoMatchesJson(toJson(diseaseMatches.stream().limit(8).toList()));
         qa.setDiseaseCaseMatchesJson(toJson(caseMatches.stream().limit(8).toList()));
         qa.setKeywordsJson(toJson(keywords));
@@ -563,7 +581,7 @@ public class ConversationService {
         qa.setQuestion(question);
         qa.setAnswer(llmAnswer.answer());
         qa.setRelatedEntitiesJson(toJson(graphMatches.stream().limit(12).toList()));
-        qa.setGraphContextJson(toJson(graphMatches));
+        qa.setGraphContextJson(toJson(graphMatches.stream().limit(24).toList()));
         qa.setDiseaseInfoMatchesJson(toJson(diseaseMatches.stream().limit(8).toList()));
         qa.setDiseaseCaseMatchesJson(toJson(caseMatches.stream().limit(8).toList()));
         qa.setKeywordsJson(toJson(keywords));
@@ -603,7 +621,22 @@ public class ConversationService {
         } catch (Exception ignored) {
             return new ArrayList<>();
         }
-        return graphMatches;
+        return dedupeRows(graphMatches, "id", 40);
+    }
+
+    private List<Map<String, Object>> dedupeRows(List<Map<String, Object>> rows, String key, int limit) {
+        Set<String> seen = new LinkedHashSet<>();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            String value = String.valueOf(row.getOrDefault(key, row));
+            if (seen.add(value)) {
+                result.add(row);
+            }
+            if (result.size() >= limit) {
+                break;
+            }
+        }
+        return result;
     }
 
     private List<Map<String, Object>> diseaseMatches(String question, List<String> keywords, UserEntity user) {

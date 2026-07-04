@@ -68,7 +68,7 @@
           <el-button :icon="Refresh" @click="loadDiseases">查询</el-button>
         </div>
       </div>
-      <el-table :data="diseases" empty-text="暂无疾病信息" @row-click="selected = $event">
+      <el-table v-loading="loading" :data="diseases" empty-text="暂无疾病信息" @row-click="selected = $event">
         <el-table-column prop="diseaseCode" label="编号" width="120" />
         <el-table-column prop="diseaseName" label="疾病" width="140" />
         <el-table-column prop="department" label="科室" width="120" />
@@ -118,7 +118,7 @@
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 import { Refresh, Upload } from '@element-plus/icons-vue'
-import { postForm, putForm, request } from '../api/client'
+import { apiErrorMessage, postForm, putForm, request } from '../api/client'
 
 const props = defineProps<{ role: string }>()
 const isAdmin = props.role === 'ADMIN'
@@ -153,8 +153,19 @@ onMounted(loadDiseases)
 
 async function loadDiseases() {
   const query = keyword.value ? `?keyword=${encodeURIComponent(keyword.value)}` : ''
-  diseases.value = await request<Disease[]>('get', `/diseases${query}`)
-  selected.value ||= diseases.value[0] || null
+  loading.value = true
+  try {
+    const data = await request<Disease[]>('get', `/diseases${query}`)
+    diseases.value = data
+    if (!selected.value || !data.some((item) => item.id === selected.value?.id)) {
+      selected.value = data[0] || null
+    }
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '疾病列表加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleImage(file: UploadFile) {
@@ -188,7 +199,8 @@ async function save() {
     await loadDiseases()
     ElMessage.success('疾病信息已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    const errorMessage = apiErrorMessage(error, '保存失败')
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
@@ -222,11 +234,18 @@ function resetForm() {
 }
 
 async function remove(id: number) {
-  await ElMessageBox.confirm('确认删除该疾病？关联病历会一起删除。', '删除疾病', { type: 'warning' })
-  await request('delete', `/admin/diseases/${id}`)
-  diseases.value = diseases.value.filter((item) => item.id !== id)
-  selected.value = diseases.value[0] || null
-  ElMessage.success('疾病已删除')
+  try {
+    await ElMessageBox.confirm('确认删除该疾病？关联病历会一起删除。', '删除疾病', { type: 'warning' })
+    await request('delete', `/admin/diseases/${id}`)
+    diseases.value = diseases.value.filter((item) => item.id !== id)
+    selected.value = diseases.value[0] || null
+    ElMessage.success('疾病已删除')
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errorMessage = apiErrorMessage(error, '疾病删除失败')
+      if (errorMessage) ElMessage.error(errorMessage)
+    }
+  }
 }
 
 function visibilityText(value?: string) {

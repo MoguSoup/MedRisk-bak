@@ -79,7 +79,7 @@
           <el-button :icon="Refresh" @click="loadCases">查询</el-button>
         </div>
       </div>
-      <el-table :data="cases" empty-text="暂无病历案例" @row-click="selected = $event">
+      <el-table v-loading="loading" :data="cases" empty-text="暂无病历案例" @row-click="selected = $event">
         <el-table-column prop="caseTitle" label="标题" min-width="200" />
         <el-table-column prop="diseaseName" label="疾病" width="120" />
         <el-table-column label="可见性" width="110">
@@ -131,7 +131,7 @@
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { onMounted, reactive, ref } from 'vue'
 import { Refresh, Upload } from '@element-plus/icons-vue'
-import { postForm, putForm, request } from '../api/client'
+import { apiErrorMessage, postForm, putForm, request } from '../api/client'
 
 const props = defineProps<{ role: string }>()
 const isAdmin = props.role === 'ADMIN'
@@ -164,18 +164,39 @@ const form = reactive<Record<string, any>>({
   visibility: 'PUBLIC'
 })
 
-onMounted(async () => {
-  diseases.value = await request<Disease[]>('get', '/diseases')
-  form.diseaseId = diseases.value[0]?.id
+onMounted(loadInitialData)
+
+async function loadInitialData() {
+  loading.value = true
+  try {
+    diseases.value = await request<Disease[]>('get', '/diseases')
+    form.diseaseId = diseases.value[0]?.id
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '疾病列表加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  } finally {
+    loading.value = false
+  }
   await loadCases()
-})
+}
 
 async function loadCases() {
   const params = new URLSearchParams()
   if (keyword.value) params.set('keyword', keyword.value)
   if (diseaseFilter.value) params.set('diseaseId', String(diseaseFilter.value))
-  cases.value = await request<MedicalCase[]>('get', `/medical-cases?${params.toString()}`)
-  selected.value ||= cases.value[0] || null
+  loading.value = true
+  try {
+    const data = await request<MedicalCase[]>('get', `/medical-cases?${params.toString()}`)
+    cases.value = data
+    if (!selected.value || !data.some((item) => item.id === selected.value?.id)) {
+      selected.value = data[0] || null
+    }
+  } catch (error) {
+    const errorMessage = apiErrorMessage(error, '病历列表加载失败')
+    if (errorMessage) ElMessage.error(errorMessage)
+  } finally {
+    loading.value = false
+  }
 }
 
 function handleImages(_: UploadFile, fileList: UploadFile[]) {
@@ -207,7 +228,8 @@ async function save() {
     await loadCases()
     ElMessage.success('病历已保存')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    const errorMessage = apiErrorMessage(error, '保存失败')
+    if (errorMessage) ElMessage.error(errorMessage)
   } finally {
     loading.value = false
   }
@@ -240,11 +262,18 @@ function resetForm() {
 }
 
 async function remove(id: number) {
-  await ElMessageBox.confirm('确认删除该病历？', '删除病历', { type: 'warning' })
-  await request('delete', `/admin/medical-cases/${id}`)
-  cases.value = cases.value.filter((item) => item.id !== id)
-  selected.value = cases.value[0] || null
-  ElMessage.success('病历已删除')
+  try {
+    await ElMessageBox.confirm('确认删除该病历？', '删除病历', { type: 'warning' })
+    await request('delete', `/admin/medical-cases/${id}`)
+    cases.value = cases.value.filter((item) => item.id !== id)
+    selected.value = cases.value[0] || null
+    ElMessage.success('病历已删除')
+  } catch (error) {
+    if (error !== 'cancel') {
+      const errorMessage = apiErrorMessage(error, '病历删除失败')
+      if (errorMessage) ElMessage.error(errorMessage)
+    }
+  }
 }
 
 function visibilityText(value?: string) {

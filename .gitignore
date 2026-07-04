@@ -8,6 +8,8 @@ Desktop.ini
 .idea/
 .vscode/
 .agents/
+AGENTS.md
+.codex/
 
 # Environment and secrets
 .env
@@ -20,7 +22,7 @@ application-local.yaml
 !.env.example
 !**/.env.example
 
-# Logs and runtime state
+# Logs, runtime state, and local-only writing material
 *.log
 *.pid
 logs/
@@ -29,6 +31,17 @@ uploads/
 exports/
 tmp/
 temp/
+final_ret/
+local_notes/
+work_logs/
+worklogs/
+report_drafts/
+ai_records/
+ai_logs/
+*_实习报告*
+*工作日志*
+*AI工具*
+*AI使用*
 
 # Frontend
 node_modules/
@@ -78,6 +91,8 @@ data/processed/*
 data/raw/
 models/*
 !models/.gitkeep
+medrisk_backend/models/
+**/models/training/
 *.joblib
 *.pkl
 *.pickle

@@ -1,9 +1,5 @@
-# Optional advanced tabular models. These are intentionally not installed by
-# the default local/Compose startup path so scikit-learn + XGBoost remain the
-# stable CPU baseline on teaching machines.
-lightgbm
-catboost
-tabpfn
+# Remaining optional advanced tabular and local-LLM runtimes. LightGBM,
+# CatBoost and TabPFN are installed by the default model-service requirements.
 tabicl
 
 # Optional FT-Transformer style research runtime. Integration is advertised as

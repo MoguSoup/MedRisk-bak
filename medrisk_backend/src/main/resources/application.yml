@@ -8,6 +8,8 @@ server:
 spring:
   application:
     name: medrisk-backend
+  jackson:
+    time-zone: Asia/Shanghai
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/medrisk?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${SPRING_DATASOURCE_USERNAME:medrisk_app}
@@ -55,7 +57,7 @@ medrisk:
     connect-timeout-ms: ${MEDRISK_HTTP_CONNECT_TIMEOUT_MS:5000}
     read-timeout-ms: ${MEDRISK_HTTP_READ_TIMEOUT_MS:20000}
   neo4j:
-    uri: ${MEDRISK_NEO4J_URI:bolt://localhost:7687}
+    uri: ${MEDRISK_NEO4J_URI:bolt://neo4j:7687}
     username: ${MEDRISK_NEO4J_USERNAME:neo4j}
     password: ${MEDRISK_NEO4J_PASSWORD:medrisk-neo4j}
     database: ${MEDRISK_NEO4J_DATABASE:neo4j}

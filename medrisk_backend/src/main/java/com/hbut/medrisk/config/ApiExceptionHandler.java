@@ -1,6 +1,7 @@
 package com.hbut.medrisk.config;
 
 import com.hbut.medrisk.dto.ApiResponse;
+import com.hbut.medrisk.service.ApiConflictException;
 import com.hbut.medrisk.service.AuthException;
 import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
@@ -34,6 +35,12 @@ public class ApiExceptionHandler {
         return ApiResponse.fail(404, ex.getMessage());
     }
 
+    @ExceptionHandler(ApiConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiResponse<Void> conflict(ApiConflictException ex) {
+        return ApiResponse.fail(409, ex.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiResponse<Void> invalid(MethodArgumentNotValidException ex) {
@@ -43,6 +50,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiResponse<Void> badRequest(IllegalArgumentException ex) {
+        return ApiResponse.fail(400, ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ApiResponse<Void> invalidState(IllegalStateException ex) {
         return ApiResponse.fail(400, ex.getMessage());
     }
 

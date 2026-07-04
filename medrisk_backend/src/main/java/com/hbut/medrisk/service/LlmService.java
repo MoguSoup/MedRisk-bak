@@ -86,6 +86,23 @@ public class LlmService {
         return chatText(envProfile(), model, prompt, null, null, fallbackSummary(content), false).answer();
     }
 
+    public String extractKnowledgeTriplets(String title, String chunk, LlmProfileService.RuntimeProfile profile) {
+        if (!configured(profile)) {
+            return "";
+        }
+        String prompt = """
+                你是医学知识图谱三元组抽取器。请只从给定文本中抽取事实，不要编造。
+                节点类型只能使用：Disease、Symptom、BodyPart、Pathogen、Drug、Treatment、Exam、Complication、RiskFactor、Department、Document、TimePoint。
+                关系类型只能使用：DIAGNOSED_AS、CAUSED_BY、SHOWS_SYMPTOM、AFFECTS_BODYPART、PREVENTED_BY、TREATED_WITH、REQUIRES_EXAMINATION、OCCURS_AT、AGGRAVATED_BY、MANAGED_BY、RELATED_TO。
+                请输出 JSON 数组，不要 Markdown，不要解释。每项格式：
+                {"head":"","head_type":"Disease","relation":"SHOWS_SYMPTOM","relation_label":"表现症状","tail":"","tail_type":"Symptom","head_description":"","tail_description":""}
+                标题：%s
+                文本：
+                %s
+                """.formatted(title, safeLimit(chunk, 1200));
+        return chatText(profile, profile.modelName(), prompt, null, null, "", false).answer();
+    }
+
     public String answer(String question, String context, byte[] imageBytes, String imageContentType) {
         return answerDetailed(question, context, imageBytes, imageContentType).answer();
     }

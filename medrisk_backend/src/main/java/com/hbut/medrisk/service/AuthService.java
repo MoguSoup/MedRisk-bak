@@ -12,7 +12,10 @@ import com.hbut.medrisk.repository.UserRepository;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,6 +67,8 @@ public class AuthService {
         LocalDateTime now = LocalDateTime.now();
         user.setCreatedAt(now);
         user.setUpdatedAt(now);
+        user.setLastLoginAt(now);
+        user.setCurrentSessionId(UUID.randomUUID().toString());
         users.save(user);
         auditService.log(user.getId(), "REGISTER", "USER", user.getId().toString(), "{}");
         return sessionFor(user);
@@ -84,7 +89,10 @@ public class AuthService {
         if (!"ACTIVE".equals(user.getStatus())) {
             throw new AuthException("账号已被禁用，请联系管理员");
         }
-        user.setLastLoginAt(LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
+        user.setLastLoginAt(now);
+        user.setUpdatedAt(now);
+        user.setCurrentSessionId(UUID.randomUUID().toString());
         auditService.log(user.getId(), "LOGIN", "USER", user.getId().toString(), "{}", clientIp);
         return sessionFor(user);
     }
@@ -116,13 +124,35 @@ public class AuthService {
 
     public UserEntity requireUser(String authorizationHeader) {
         String token = bearerToken(authorizationHeader);
-        Object username = jwtService.parseToken(token).get("sub");
+        Map<String, Object> payload = jwtService.parseToken(token);
+        Object username = payload.get("sub");
         if (username == null) {
             throw new AuthException("登录令牌缺少用户信息");
         }
         UserEntity user = users.findByUsername(username.toString()).orElseThrow(() -> new AuthException("用户不存在"));
         if (!"ACTIVE".equals(user.getStatus())) {
             throw new AuthException("账号已被禁用，请联系管理员");
+        }
+        Object sessionId = payload.get("sid");
+        if (sessionId == null || user.getCurrentSessionId() == null || !Objects.equals(String.valueOf(sessionId), user.getCurrentSessionId())) {
+            throw new AuthException("该账号已在另一设备上登录，请重新登录");
+        }
+        return user;
+    }
+
+    @Transactional
+    public UserEntity logout(String authorizationHeader) {
+        String token = bearerToken(authorizationHeader);
+        Map<String, Object> payload = jwtService.parseToken(token);
+        Object username = payload.get("sub");
+        if (username == null) {
+            throw new AuthException("登录令牌缺少用户信息");
+        }
+        UserEntity user = users.findByUsername(username.toString()).orElseThrow(() -> new AuthException("用户不存在"));
+        Object sessionId = payload.get("sid");
+        if (sessionId != null && Objects.equals(String.valueOf(sessionId), user.getCurrentSessionId())) {
+            user.setCurrentSessionId(null);
+            user.setUpdatedAt(LocalDateTime.now());
         }
         return user;
     }

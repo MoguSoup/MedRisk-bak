@@ -2,6 +2,8 @@ package com.hbut.medrisk.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hbut.medrisk.dto.ModelPredictionResponse;
+import com.hbut.medrisk.dto.PredictionFactorInfo;
 import com.hbut.medrisk.dto.ReportGenerateRequest;
 import com.hbut.medrisk.dto.ReportResponse;
 import com.hbut.medrisk.entity.ConversationEntity;
@@ -10,6 +12,7 @@ import com.hbut.medrisk.entity.QaHistoryEntity;
 import com.hbut.medrisk.entity.ReportRecordEntity;
 import com.hbut.medrisk.entity.UserEntity;
 import com.hbut.medrisk.repository.ConversationRepository;
+import com.hbut.medrisk.repository.PredictionRecordRepository;
 import com.hbut.medrisk.repository.QaHistoryRepository;
 import com.hbut.medrisk.repository.ReportRecordRepository;
 import com.lowagie.text.Document;
@@ -36,6 +39,7 @@ public class ReportService {
     private final AuditService auditService;
     private final ConversationRepository conversations;
     private final QaHistoryRepository qaHistory;
+    private final PredictionRecordRepository predictionRecords;
     private final ObjectMapper objectMapper;
 
     public ReportService(
@@ -44,12 +48,14 @@ public class ReportService {
             AuditService auditService,
             ConversationRepository conversations,
             QaHistoryRepository qaHistory,
+            PredictionRecordRepository predictionRecords,
             ObjectMapper objectMapper) {
         this.reports = reports;
         this.predictionService = predictionService;
         this.auditService = auditService;
         this.conversations = conversations;
         this.qaHistory = qaHistory;
+        this.predictionRecords = predictionRecords;
         this.objectMapper = objectMapper;
     }
 
@@ -98,13 +104,23 @@ public class ReportService {
             document.add(new Paragraph("生成时间：" + report.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")), bodyFont));
             document.add(new Paragraph("报告编号：" + report.getId(), bodyFont));
             document.add(new Paragraph(" ", bodyFont));
-            document.add(new Paragraph(stripHtml(report.getReportHtml()), bodyFont));
+            for (String line : renderPdfLines(report, user)) {
+                document.add(new Paragraph(line.isBlank() ? " " : line, bodyFont));
+            }
             document.close();
             auditService.log(user.getId(), "DOWNLOAD_REPORT", "REPORT", report.getId().toString(), "{}");
             return output.toByteArray();
         } catch (Exception ex) {
             throw new IllegalStateException("PDF 报告生成失败");
         }
+    }
+
+    @Transactional
+    public Map<String, Object> delete(Long reportId, UserEntity user) {
+        ReportRecordEntity report = requireAccessibleReport(reportId, user);
+        reports.delete(report);
+        auditService.log(user.getId(), "DELETE_REPORT", "REPORT", reportId.toString(), "{}");
+        return Map.of("deleted", true, "id", reportId);
     }
 
     private ReportRecordEntity requireAccessibleReport(Long reportId, UserEntity user) {
@@ -117,33 +133,248 @@ public class ReportService {
     }
 
     private ReportResponse toResponse(ReportRecordEntity report) {
-        return new ReportResponse(report.getId(), report.getPredictionId(), report.getReportTitle(), report.getReportHtml(), report.getCreatedAt());
+        return new ReportResponse(report.getId(), report.getPredictionId(), report.getReportTitle(), displayHtml(report), report.getCreatedAt());
     }
 
     private String renderHtml(PredictionRecordEntity prediction, List<QaHistoryEntity> selectedQa, boolean includeReasoning) {
+        ModelPredictionResponse model = readPredictionModel(prediction);
+        String diseaseName = blankToDefault(model.diseaseName(), prediction.getDiseaseName());
+        String riskLabel = blankToDefault(model.riskLabel(), prediction.getRiskLabel());
+        String modelVersion = blankToDefault(model.modelVersion(), prediction.getModelVersion());
+        String disclaimer = blankToDefault(model.disclaimer(), "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。");
         return """
                 <article class="medrisk-report">
                   <h1>MedRisk AI 风险评估报告</h1>
-                  <p><strong>病种：</strong>%s</p>
-                  <p><strong>风险等级：</strong>%s</p>
-                  <p><strong>风险概率：</strong>%.2f%%</p>
-                  <p><strong>置信度：</strong>%.2f%%</p>
-                  <p><strong>模型版本：</strong>%s</p>
-                  <p><strong>模型来源说明：</strong>%s</p>
-                  <h2>模型输出</h2>
-                  <pre>%s</pre>
+                  <section class="report-section">
+                    <h2>风险结论</h2>
+                    <dl class="report-summary">
+                      <dt>患者</dt><dd>%s</dd>
+                      <dt>病种</dt><dd>%s</dd>
+                      <dt>风险等级</dt><dd>%s</dd>
+                      <dt>风险概率</dt><dd>%.2f%%</dd>
+                      <dt>置信度</dt><dd>%.2f%%</dd>
+                      <dt>预测时间</dt><dd>%s</dd>
+                    </dl>
+                    <p class="report-conclusion">本次结构化风险预测提示该用户的%s风险为<strong>%s</strong>，风险概率约为<strong>%.2f%%</strong>。请结合病史、体格检查和线下检验结果，由专业医生综合判断。</p>
+                  </section>
+                  <section class="report-section">
+                    <h2>关键风险因素</h2>
+                    <table class="risk-factor-table">
+                      <thead>
+                        <tr><th>因素</th><th>输入值</th><th>影响程度</th><th>方向</th></tr>
+                      </thead>
+                      <tbody>
+                        %s
+                      </tbody>
+                    </table>
+                  </section>
+                  <section class="report-section">
+                    <h2>后续建议</h2>
+                    <ul class="report-recommendations">
+                      %s
+                    </ul>
+                  </section>
+                  <section class="report-section">
+                    <h2>模型信息</h2>
+                    <dl class="report-summary">
+                      <dt>模型版本</dt><dd>%s</dd>
+                      <dt>模型来源说明</dt><dd>%s</dd>
+                    </dl>
+                  </section>
                   %s
-                  <p class="disclaimer">本系统仅用于教学演示和健康风险提示，不能替代医生诊断。</p>
+                  <p class="disclaimer">%s</p>
                 </article>
                 """.formatted(
-                prediction.getDiseaseName(),
-                labelCn(prediction.getRiskLabel()),
-                prediction.getRiskProbability() * 100,
-                prediction.getConfidence() * 100,
-                prediction.getModelVersion(),
-                modelSourceText(prediction.getModelVersion()),
-                escape(prediction.getResultJson()),
-                renderConsultationSummary(selectedQa, includeReasoning));
+                escape(blankToDefault(prediction.getPatientName(), "演示患者")),
+                escape(diseaseName),
+                labelCn(riskLabel),
+                model.riskProbability() * 100,
+                model.confidence() * 100,
+                prediction.getCreatedAt() == null ? "无时间" : prediction.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
+                escape(diseaseName),
+                labelCn(riskLabel),
+                model.riskProbability() * 100,
+                renderRiskFactorRows(model.topFactors()),
+                renderRecommendationItems(model.recommendations()),
+                escape(modelVersion),
+                escape(modelSourceText(modelVersion)),
+                renderConsultationSummary(selectedQa, includeReasoning),
+                escape(disclaimer));
+    }
+
+    private String displayHtml(ReportRecordEntity report) {
+        String html = report.getReportHtml();
+        if (usesLegacyRawModelOutput(html)) {
+            return predictionRecords.findById(report.getPredictionId())
+                    .map((prediction) -> renderHtml(prediction, List.of(), false))
+                    .orElse(html);
+        }
+        return html;
+    }
+
+    private boolean usesLegacyRawModelOutput(String html) {
+        return html != null && html.contains("<h2>模型输出</h2>") && html.contains("<pre>");
+    }
+
+    private ModelPredictionResponse readPredictionModel(PredictionRecordEntity prediction) {
+        try {
+            ModelPredictionResponse model = objectMapper.readValue(prediction.getResultJson(), ModelPredictionResponse.class);
+            return new ModelPredictionResponse(
+                    blankToDefault(model.diseaseType(), prediction.getDiseaseType()),
+                    blankToDefault(model.diseaseName(), prediction.getDiseaseName()),
+                    blankToDefault(model.riskLabel(), prediction.getRiskLabel()),
+                    model.riskProbability(),
+                    model.confidence(),
+                    blankToDefault(model.modelVersion(), prediction.getModelVersion()),
+                    model.topFactors() == null ? List.of() : model.topFactors(),
+                    model.recommendations() == null ? List.of() : model.recommendations(),
+                    blankToDefault(model.disclaimer(), "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。"));
+        } catch (Exception ex) {
+            return new ModelPredictionResponse(
+                    prediction.getDiseaseType(),
+                    prediction.getDiseaseName(),
+                    prediction.getRiskLabel(),
+                    prediction.getRiskProbability(),
+                    prediction.getConfidence(),
+                    prediction.getModelVersion(),
+                    List.of(),
+                    List.of("请结合病史与线下检查综合判断。"),
+                    "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。");
+        }
+    }
+
+    private String renderRiskFactorRows(List<PredictionFactorInfo> factors) {
+        if (factors == null || factors.isEmpty()) {
+            return "<tr><td colspan=\"4\">暂无关键因素明细，请结合原始检查数据和医生意见综合判断。</td></tr>";
+        }
+        return factors.stream()
+                .map((factor) -> """
+                        <tr>
+                          <td>%s</td>
+                          <td>%s</td>
+                          <td>%s</td>
+                          <td>%s</td>
+                        </tr>
+                        """.formatted(
+                        escape(blankToDefault(factor.label(), factor.name())),
+                        escape(formatFactorValue(factor.value())),
+                        formatPercent(factor.impact()),
+                        escape(directionCn(factor.direction()))))
+                .reduce("", String::concat);
+    }
+
+    private String renderRecommendationItems(List<String> recommendations) {
+        if (recommendations == null || recommendations.isEmpty()) {
+            return "<li>请结合病史、体征和线下检查结果，由医生进一步评估。</li>";
+        }
+        return recommendations.stream()
+                .filter((item) -> item != null && !item.isBlank())
+                .map((item) -> "<li>" + escape(item) + "</li>")
+                .reduce("", String::concat);
+    }
+
+    private List<String> renderPdfLines(ReportRecordEntity report, UserEntity user) {
+        try {
+            PredictionRecordEntity prediction = predictionService.requireAccessibleRecord(report.getPredictionId(), user);
+            ModelPredictionResponse model = readPredictionModel(prediction);
+            List<String> lines = new ArrayList<>();
+            lines.add("风险结论");
+            lines.add("患者：" + blankToDefault(prediction.getPatientName(), "演示患者"));
+            lines.add("病种：" + blankToDefault(model.diseaseName(), prediction.getDiseaseName()));
+            lines.add("风险等级：" + labelCn(blankToDefault(model.riskLabel(), prediction.getRiskLabel())));
+            lines.add("风险概率：" + formatPercent(model.riskProbability()));
+            lines.add("置信度：" + formatPercent(model.confidence()));
+            lines.add("预测时间：" + (prediction.getCreatedAt() == null ? "无时间" : prediction.getCreatedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))));
+            lines.add("");
+            lines.add("关键风险因素");
+            if (model.topFactors() == null || model.topFactors().isEmpty()) {
+                lines.add("暂无关键因素明细，请结合原始检查数据和医生意见综合判断。");
+            } else {
+                for (PredictionFactorInfo factor : model.topFactors()) {
+                    lines.add("%s：输入值 %s，影响程度 %s，方向 %s".formatted(
+                            blankToDefault(factor.label(), factor.name()),
+                            formatFactorValue(factor.value()),
+                            formatPercent(factor.impact()),
+                            directionCn(factor.direction())));
+                }
+            }
+            lines.add("");
+            lines.add("后续建议");
+            List<String> recommendations = model.recommendations() == null ? List.of() : model.recommendations();
+            if (recommendations.isEmpty()) {
+                lines.add("请结合病史、体征和线下检查结果，由医生进一步评估。");
+            } else {
+                recommendations.forEach((item) -> lines.add("• " + item));
+            }
+            lines.add("");
+            lines.add("模型信息");
+            String modelVersion = blankToDefault(model.modelVersion(), prediction.getModelVersion());
+            lines.add("模型版本：" + modelVersion);
+            lines.add("模型来源说明：" + modelSourceText(modelVersion));
+            lines.addAll(consultationPdfLines(report));
+            lines.add("");
+            lines.add(blankToDefault(model.disclaimer(), "本结果仅用于教学演示和健康风险提示，不能替代医生诊断。"));
+            return lines;
+        } catch (Exception ignored) {
+            return htmlToTextLines(displayHtml(report));
+        }
+    }
+
+    private List<String> consultationPdfLines(ReportRecordEntity report) {
+        String html = displayHtml(report);
+        if (html == null || !html.contains("问诊同步摘要")) {
+            return List.of();
+        }
+        int start = html.indexOf("<h2>问诊同步摘要</h2>");
+        if (start < 0) {
+            start = html.indexOf("问诊同步摘要");
+        }
+        int end = html.indexOf("</table>", start);
+        String section = end > start ? html.substring(start, end + "</table>".length()) : html.substring(start);
+        List<String> lines = htmlToTextLines(section);
+        if (lines.isEmpty()) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        result.add("");
+        result.addAll(lines);
+        return result;
+    }
+
+    private List<String> htmlToTextLines(String html) {
+        String text = html == null ? "" : html
+                .replaceAll("(?i)</h[1-6]>", "\n")
+                .replaceAll("(?i)<br\\s*/?>", "\n")
+                .replaceAll("(?i)</p>", "\n")
+                .replaceAll("(?i)</li>", "\n")
+                .replaceAll("(?i)</tr>", "\n")
+                .replaceAll("<[^>]+>", " ")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+                .replace("&nbsp;", " ");
+        List<String> lines = new ArrayList<>();
+        for (String line : text.split("\\R")) {
+            String normalized = line.replaceAll("\\s+", " ").trim();
+            if (!normalized.isBlank()) lines.add(normalized);
+        }
+        return lines.isEmpty() ? List.of("暂无报告内容") : lines;
+    }
+
+    private String formatFactorValue(Object value) {
+        if (value == null) return "无";
+        if (value instanceof Boolean bool) return bool ? "是" : "否";
+        return String.valueOf(value);
+    }
+
+    private String formatPercent(double value) {
+        return "%.2f%%".formatted(value * 100);
+    }
+
+    private String directionCn(String direction) {
+        if ("increase".equals(direction)) return "升高风险";
+        if ("decrease".equals(direction)) return "降低风险";
+        return "中性/参考";
     }
 
     private List<QaHistoryEntity> selectedQa(ReportGenerateRequest request, UserEntity user) {
@@ -170,11 +401,11 @@ public class ReportService {
         String topic = joinDistinct(rows.stream().map(QaHistoryEntity::getQuestion).toList(), 280);
         String keywords = joinDistinct(rows.stream().flatMap((item) -> readStringList(item.getKeywordsJson()).stream()).toList(), 220);
         String evidence = joinDistinct(rows.stream().flatMap((item) -> evidenceTitles(item.getEvidenceSourcesJson()).stream()).toList(), 260);
-        String answer = joinDistinct(rows.stream().map(QaHistoryEntity::getAnswer).toList(), 520);
-        String clinical = joinDistinct(rows.stream().map((item) -> pickClinicalSentences(item.getAnswer())).toList(), 260);
-        String advice = joinDistinct(rows.stream().map((item) -> pickAdviceSentences(item.getAnswer())).toList(), 260);
+        String answer = joinDistinct(rows.stream().map(QaHistoryEntity::getAnswer).toList(), 1800);
+        String clinical = joinDistinct(rows.stream().map((item) -> pickClinicalSentences(item.getAnswer())).toList(), 500);
+        String advice = joinDistinct(rows.stream().map((item) -> pickAdviceSentences(item.getAnswer())).toList(), 500);
         String reasoning = includeReasoning
-                ? joinDistinct(rows.stream().map(QaHistoryEntity::getReasoningContent).toList(), 420)
+                ? joinDistinct(rows.stream().map(QaHistoryEntity::getReasoningContent).toList(), 1200)
                 : "无";
         String models = joinDistinct(rows.stream()
                 .map((item) -> "%s · %s · %s".formatted(
@@ -268,6 +499,11 @@ public class ReportService {
 
     private String blankToNone(String value) {
         return value == null || value.isBlank() ? "无" : value;
+    }
+
+    private String blankToDefault(String value, String fallback) {
+        if (value != null && !value.isBlank()) return value;
+        return fallback == null || fallback.isBlank() ? "无" : fallback;
     }
 
     private String stripHtml(String html) {

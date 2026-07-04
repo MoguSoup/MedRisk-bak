@@ -12,7 +12,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hbut.medrisk.entity.ModelEvaluationEntity;
+import com.hbut.medrisk.entity.ModelFeedbackEntity;
+import com.hbut.medrisk.entity.ModelTrainingJobEntity;
+import com.hbut.medrisk.entity.ModelVersionEntity;
+import com.hbut.medrisk.repository.ModelEvaluationRepository;
+import com.hbut.medrisk.repository.ModelFeedbackRepository;
+import com.hbut.medrisk.repository.ModelTrainingJobRepository;
+import com.hbut.medrisk.repository.ModelVersionRepository;
+import com.hbut.medrisk.repository.UserRepository;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -34,6 +48,21 @@ class MedRiskApplicationTests {
 
     @Autowired
     ObjectMapper objectMapper;
+
+    @Autowired
+    ModelVersionRepository modelVersions;
+
+    @Autowired
+    ModelTrainingJobRepository trainingJobs;
+
+    @Autowired
+    ModelEvaluationRepository modelEvaluations;
+
+    @Autowired
+    ModelFeedbackRepository modelFeedback;
+
+    @Autowired
+    UserRepository users;
 
     @Test
     void healthEndpointReturnsUp() throws Exception {
@@ -120,6 +149,251 @@ class MedRiskApplicationTests {
     }
 
     @Test
+    void secondLoginInvalidatesPreviousSession() throws Exception {
+        String suffix = String.valueOf(System.nanoTime());
+        String username = "single_session_" + suffix;
+        String firstToken = register(username, username + "@medrisk.local", "单会话测试用户", "PATIENT");
+        String secondToken = login(username, "123456");
+
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + firstToken))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("该账号已在另一设备上登录，请重新登录"));
+
+        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + secondToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.username").value(username));
+    }
+
+    @Test
+    void deletingModelVersionCascadesJobsEvaluationsAndFeedback() throws Exception {
+        String adminToken = login("admin", "123456");
+        String version = "cascade-delete-" + System.nanoTime();
+        LocalDateTime now = LocalDateTime.now();
+
+        ModelVersionEntity model = new ModelVersionEntity();
+        model.setDiseaseType("diabetes");
+        model.setDiseaseName("糖尿病");
+        model.setModelName("级联删除测试模型");
+        model.setModelType("xgboost");
+        model.setVersion(version);
+        model.setMetricsJson("{\"accuracy\":0.91}");
+        model.setFeatureSchemaJson("[]");
+        model.setHyperparametersJson("{}");
+        model.setActive(false);
+        model.setCreatedAt(now);
+        model = modelVersions.save(model);
+
+        ModelTrainingJobEntity job = new ModelTrainingJobEntity();
+        job.setDatasetId(1L);
+        job.setEvaluationDatasetId(1L);
+        job.setUserId(1L);
+        job.setDiseaseType("diabetes");
+        job.setModelName("级联删除测试任务");
+        job.setModelType("xgboost");
+        job.setTrainStatus("训练成功");
+        job.setProgress(100);
+        job.setCurrentLoss(0.123);
+        job.setTrainEpoch(1);
+        job.setLearningRate(0.1);
+        job.setTestSize(0.2);
+        job.setHyperparametersJson("{}");
+        job.setModelVersion(version);
+        job.setMetricsJson("{\"accuracy\":0.91}");
+        job.setCreatedAt(now);
+        job.setUpdatedAt(now);
+        job = trainingJobs.save(job);
+
+        ModelEvaluationEntity evaluation = new ModelEvaluationEntity();
+        evaluation.setModelVersionId(model.getId());
+        evaluation.setDatasetId(1L);
+        evaluation.setUserId(1L);
+        evaluation.setMetricsJson("{\"accuracy\":0.9}");
+        evaluation.setPredictionsJson("[]");
+        evaluation.setCreatedAt(now);
+        evaluation = modelEvaluations.save(evaluation);
+
+        ModelFeedbackEntity modelLevelFeedback = feedbackFor(model.getId(), null, now);
+        modelLevelFeedback = modelFeedback.save(modelLevelFeedback);
+        ModelFeedbackEntity evaluationFeedback = feedbackFor(null, evaluation.getId(), now);
+        evaluationFeedback = modelFeedback.save(evaluationFeedback);
+
+        mockMvc.perform(delete("/api/admin/models/" + model.getId()).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(true))
+                .andExpect(jsonPath("$.data.deletedJobs").value(1))
+                .andExpect(jsonPath("$.data.deletedEvaluations").value(1))
+                .andExpect(jsonPath("$.data.deletedFeedback").value(2));
+
+        assertThat(modelVersions.findById(model.getId())).isEmpty();
+        assertThat(trainingJobs.findById(job.getId())).isEmpty();
+        assertThat(modelEvaluations.findById(evaluation.getId())).isEmpty();
+        assertThat(modelFeedback.findById(modelLevelFeedback.getId())).isEmpty();
+        assertThat(modelFeedback.findById(evaluationFeedback.getId())).isEmpty();
+    }
+
+    @Test
+    void protectedDemoAdminCannotBeDisabledDeletedOrDemotedByOtherAdmins() throws Exception {
+        String adminToken = login("admin", "123456");
+        Long protectedAdminId = users.findByUsername("admin").orElseThrow().getId();
+        String otherAdmin = "other_admin_" + System.nanoTime();
+
+        mockMvc.perform(post("/api/admin/users")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "username", otherAdmin,
+                                "email", otherAdmin + "@medrisk.local",
+                                "name", "其他管理员",
+                                "role", "ADMIN",
+                                "status", "ACTIVE",
+                                "password", "123456"))))
+                .andExpect(status().isOk());
+        String otherAdminToken = login(otherAdmin, "123456");
+
+        mockMvc.perform(post("/api/admin/users/" + protectedAdminId + "/status")
+                        .header("Authorization", "Bearer " + otherAdminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("status", "DISABLED"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("演示管理员不能禁用"));
+
+        mockMvc.perform(delete("/api/admin/users/" + protectedAdminId)
+                        .header("Authorization", "Bearer " + otherAdminToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("演示管理员不能删除"));
+
+        mockMvc.perform(put("/api/admin/users/" + protectedAdminId)
+                        .header("Authorization", "Bearer " + otherAdminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "username", "admin",
+                                "email", "admin@medrisk.local",
+                                "name", "管理员",
+                                "phone", "",
+                                "role", "PATIENT",
+                                "status", "ACTIVE"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("演示管理员不能降级"));
+    }
+
+    @Test
+    void adminModelsBackfillMissingModelPathFromSuccessfulTrainingJob() throws Exception {
+        String adminToken = login("admin", "123456");
+        LocalDateTime now = LocalDateTime.now();
+        String version = "backfill-model-path-" + System.nanoTime();
+        String modelPath = "models/training/job-backfill/model.joblib";
+
+        ModelVersionEntity model = new ModelVersionEntity();
+        model.setDiseaseType("diabetes");
+        model.setDiseaseName("糖尿病");
+        model.setModelName("模型路径补齐测试");
+        model.setModelType("xgboost");
+        model.setVersion(version);
+        model.setMetricsJson("{}");
+        model.setFeatureSchemaJson("[]");
+        model.setHyperparametersJson("{}");
+        model.setActive(false);
+        model.setCreatedAt(now);
+        model = modelVersions.save(model);
+
+        ModelTrainingJobEntity job = new ModelTrainingJobEntity();
+        job.setDatasetId(1L);
+        job.setUserId(1L);
+        job.setDiseaseType("diabetes");
+        job.setModelName("模型路径补齐任务");
+        job.setModelType("xgboost");
+        job.setTrainStatus("训练成功");
+        job.setProgress(100);
+        job.setTrainEpoch(1);
+        job.setLearningRate(0.1);
+        job.setTestSize(0.2);
+        job.setHyperparametersJson("{}");
+        job.setModelVersion(version);
+        job.setModelPath(modelPath);
+        job.setMetricsJson("{\"accuracy\":0.93}");
+        job.setCreatedAt(now);
+        job.setUpdatedAt(now);
+        trainingJobs.save(job);
+
+        MvcResult result = mockMvc.perform(get("/api/admin/models").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ModelVersionEntity refreshed = modelVersions.findById(model.getId()).orElseThrow();
+        JsonNode matched = null;
+        for (JsonNode item : objectMapper.readTree(result.getResponse().getContentAsString()).path("data")) {
+            if (version.equals(item.path("version").asText())) {
+                matched = item;
+                break;
+            }
+        }
+        assertThat(matched).isNotNull();
+        assertThat(matched.path("modelPath").asText()).isEqualTo(modelPath);
+        assertThat(refreshed.getModelPath()).isEqualTo(modelPath);
+    }
+
+    @Test
+    void adminModelAndTrainingListsCompactLargeMetricCurves() throws Exception {
+        String adminToken = login("admin", "123456");
+        LocalDateTime now = LocalDateTime.now();
+        String version = "compact-metrics-" + System.nanoTime();
+        String metricsJson = objectMapper.writeValueAsString(largeMetrics(1000));
+
+        ModelVersionEntity model = new ModelVersionEntity();
+        model.setDiseaseType("diabetes");
+        model.setDiseaseName("糖尿病");
+        model.setModelName("指标瘦身测试模型");
+        model.setModelType("xgboost");
+        model.setVersion(version);
+        model.setMetricsJson(metricsJson);
+        model.setFeatureSchemaJson("[]");
+        model.setHyperparametersJson("{}");
+        model.setModelPath("models/training/job-compact/model.joblib");
+        model.setActive(false);
+        model.setCreatedAt(now);
+        model = modelVersions.save(model);
+
+        ModelTrainingJobEntity job = new ModelTrainingJobEntity();
+        job.setDatasetId(1L);
+        job.setUserId(1L);
+        job.setDiseaseType("diabetes");
+        job.setModelName("指标瘦身测试任务");
+        job.setModelType("xgboost");
+        job.setTrainStatus("训练成功");
+        job.setProgress(100);
+        job.setCurrentLoss(0.1);
+        job.setTrainEpoch(1);
+        job.setLearningRate(0.1);
+        job.setTestSize(0.2);
+        job.setHyperparametersJson("{}");
+        job.setModelVersion(version);
+        job.setModelPath("models/training/job-compact/model.joblib");
+        job.setMetricsJson(metricsJson);
+        job.setCreatedAt(now);
+        job.setUpdatedAt(now);
+        job = trainingJobs.save(job);
+
+        MvcResult modelResult = mockMvc.perform(get("/api/admin/models").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode modelNode = findByText(objectMapper.readTree(modelResult.getResponse().getContentAsString()).path("data"), "version", version);
+        assertThat(modelNode).isNotNull();
+        assertThat(modelNode.path("metrics").path("rocCurve").size()).isLessThanOrEqualTo(400);
+        assertThat(modelNode.path("metrics").path("rocCurve").get(0).path("fpr").asDouble()).isEqualTo(0.0);
+        assertThat(modelNode.path("metrics").path("rocCurve").get(modelNode.path("metrics").path("rocCurve").size() - 1).path("fpr").asDouble()).isEqualTo(1.0);
+
+        MvcResult jobResult = mockMvc.perform(get("/api/admin/training-jobs").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode jobNode = findById(objectMapper.readTree(jobResult.getResponse().getContentAsString()).path("data"), job.getId());
+        assertThat(jobNode).isNotNull();
+        assertThat(jobNode.path("metrics").path("prCurve").size()).isLessThanOrEqualTo(400);
+
+        modelVersions.deleteById(model.getId());
+        trainingJobs.deleteById(job.getId());
+    }
+
+    @Test
     void auditLogsIncludeClientIpForBusinessOperations() throws Exception {
         String adminToken = login("admin", "123456");
         mockMvc.perform(post("/api/admin/users")
@@ -184,6 +458,18 @@ class MedRiskApplicationTests {
                 .path("data")
                 .path("id")
                 .asLong();
+        String reportHtml = objectMapper.readTree(report.getResponse().getContentAsString())
+                .path("data")
+                .path("reportHtml")
+                .asText();
+        assertThat(reportHtml)
+                .contains("风险结论", "关键风险因素", "后续建议")
+                .doesNotContain("<pre>")
+                .doesNotContain("\"confidence\"");
+
+        mockMvc.perform(get("/api/reports").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].id").value(reportId));
 
         MvcResult pdf = mockMvc.perform(get("/api/reports/" + reportId + "/download")
                         .header("Authorization", "Bearer " + adminToken))
@@ -192,9 +478,10 @@ class MedRiskApplicationTests {
                 .andReturn();
         assertThat(pdf.getResponse().getContentAsByteArray()).startsWith("%PDF".getBytes());
 
-        mockMvc.perform(get("/api/admin/models").header("Authorization", "Bearer " + adminToken))
+        MvcResult modelList = mockMvc.perform(get("/api/admin/models").header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(5));
+                .andReturn();
+        assertThat(objectMapper.readTree(modelList.getResponse().getContentAsString()).path("data").size()).isGreaterThanOrEqualTo(5);
     }
 
     @Test
@@ -233,6 +520,28 @@ class MedRiskApplicationTests {
                 .path("id")
                 .asLong();
 
+        MockMultipartFile zippedDatasetFile = new MockMultipartFile(
+                "file",
+                "heart-training.zip",
+                "application/zip",
+                zipBytes("nested/heart-training.csv", "\uFEFF" + sampleCsv()));
+        MvcResult zippedDatasetResult = mockMvc.perform(multipart("/api/admin/datasets")
+                        .file(zippedDatasetFile)
+                        .param("name", "ZIP 心脏病训练样例")
+                        .param("diseaseType", "heart")
+                        .param("description", "ZIP 中包含带 BOM 的 CSV")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("VALID"))
+                .andExpect(jsonPath("$.data.sampleCount").value(12))
+                .andExpect(jsonPath("$.data.fileType").value("csv"))
+                .andExpect(jsonPath("$.data.featureColumns[0]").value("age"))
+                .andReturn();
+        long zippedDatasetId = objectMapper.readTree(zippedDatasetResult.getResponse().getContentAsString())
+                .path("data")
+                .path("id")
+                .asLong();
+
         MockMultipartFile invalidFile = new MockMultipartFile(
                 "file",
                 "invalid.csv",
@@ -247,6 +556,11 @@ class MedRiskApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("INVALID"))
                 .andExpect(jsonPath("$.data.validationMessage").value("数据集必须包含 label 列"));
+
+        mockMvc.perform(delete("/api/admin/datasets/" + zippedDatasetId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(true));
 
         MvcResult jobResult = mockMvc.perform(post("/api/admin/training-jobs")
                         .header("Authorization", "Bearer " + adminToken)
@@ -319,6 +633,16 @@ class MedRiskApplicationTests {
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.deleted").value(true));
+
+        mockMvc.perform(delete("/api/admin/datasets/" + datasetId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(true))
+                .andExpect(jsonPath("$.data.deletedTrainingJobs").value(1));
+
+        mockMvc.perform(get("/api/admin/training-jobs/" + jobId + "/status")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -426,6 +750,97 @@ class MedRiskApplicationTests {
         mockMvc.perform(get("/api/doctor/console/summary").header("Authorization", "Bearer " + doctorToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.predictionCount").isNumber());
+    }
+
+    @Test
+    void predictionAndReportDeleteRespectScopeAndCascade() throws Exception {
+        String suffix = String.valueOf(System.nanoTime());
+        String patientToken = login("patient", "123456");
+        String otherToken = register("delete_scope_" + suffix, "delete_scope_" + suffix + "@medrisk.local", "删除范围患者", "PATIENT");
+
+        long recordId = createPrediction(patientToken, "删除测试患者");
+        MvcResult conversationResult = mockMvc.perform(post("/api/conversations")
+                        .header("Authorization", "Bearer " + patientToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("title", "报告同步问诊"))))
+                .andExpect(status().isOk())
+                .andReturn();
+        long conversationId = objectMapper.readTree(conversationResult.getResponse().getContentAsString())
+                .path("data")
+                .path("conversation")
+                .path("id")
+                .asLong();
+        MvcResult qaResult = mockMvc.perform(multipart("/api/conversations/" + conversationId + "/messages")
+                        .param("question", "糖尿病风险报告里复查建议是什么？")
+                        .param("chatMode", "medical")
+                        .param("reasoningEnabled", "true")
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.answer").isString())
+                .andReturn();
+        long qaId = objectMapper.readTree(qaResult.getResponse().getContentAsString()).path("data").path("id").asLong();
+
+        MvcResult reportResult = mockMvc.perform(post("/api/reports/generate/" + recordId)
+                        .header("Authorization", "Bearer " + patientToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "conversationId", conversationId,
+                                "qaMessageIds", List.of(qaId),
+                                "includeReasoning", true))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reportHtml").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<pre>"))))
+                .andExpect(jsonPath("$.data.reportHtml").value(org.hamcrest.Matchers.containsString("问诊同步摘要")))
+                .andExpect(jsonPath("$.data.reportHtml").value(org.hamcrest.Matchers.containsString("模型答复要点")))
+                .andReturn();
+        long reportId = objectMapper.readTree(reportResult.getResponse().getContentAsString()).path("data").path("id").asLong();
+        MvcResult reportPdf = mockMvc.perform(get("/api/reports/" + reportId + "/download")
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        try (PDDocument pdfDocument = Loader.loadPDF(reportPdf.getResponse().getContentAsByteArray())) {
+            String pdfText = new PDFTextStripper().getText(pdfDocument);
+            assertThat(pdfText).contains("问诊同步摘要", "模型答复要点");
+        }
+
+        mockMvc.perform(delete("/api/reports/" + reportId).header("Authorization", "Bearer " + otherToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        mockMvc.perform(delete("/api/history/predictions/" + recordId).header("Authorization", "Bearer " + otherToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        mockMvc.perform(delete("/api/reports/" + reportId).header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(true));
+        mockMvc.perform(get("/api/reports/" + reportId).header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+
+        JsonNode historyAfterReportDelete = objectMapper.readTree(mockMvc.perform(get("/api/history/predictions")
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data");
+        assertThat(recordIds(historyAfterReportDelete)).contains(recordId);
+
+        MvcResult secondReportResult = mockMvc.perform(post("/api/reports/generate/" + recordId)
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andReturn();
+        long secondReportId = objectMapper.readTree(secondReportResult.getResponse().getContentAsString()).path("data").path("id").asLong();
+
+        mockMvc.perform(delete("/api/history/predictions/" + recordId).header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.deleted").value(true))
+                .andExpect(jsonPath("$.data.deletedReports").value(1));
+        mockMvc.perform(get("/api/reports/" + secondReportId).header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+
+        JsonNode historyAfterPredictionDelete = objectMapper.readTree(mockMvc.perform(get("/api/history/predictions")
+                        .header("Authorization", "Bearer " + patientToken))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data");
+        assertThat(recordIds(historyAfterPredictionDelete)).doesNotContain(recordId);
     }
 
     @Test
@@ -611,11 +1026,17 @@ class MedRiskApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.sources").isArray())
                 .andReturn();
-        JsonNode seedCounts = objectMapper.readTree(seedStatus.getResponse().getContentAsString()).path("data").path("counts");
+        JsonNode seedData = objectMapper.readTree(seedStatus.getResponse().getContentAsString()).path("data");
+        JsonNode seedCounts = seedData.path("counts");
+        JsonNode seedTargets = seedData.path("targets");
         assertThat(seedCounts.path("diseases").asInt()).isGreaterThanOrEqualTo(50);
         assertThat(seedCounts.path("documents").asInt()).isGreaterThanOrEqualTo(100);
         assertThat(seedCounts.path("medicalCases").asInt()).isGreaterThanOrEqualTo(50);
-        assertThat(seedCounts.path("datasets").asInt()).isGreaterThanOrEqualTo(5);
+        assertThat(seedCounts.path("datasets").asInt()).isZero();
+        assertThat(seedTargets.path("diseases").asInt()).isEqualTo(seedCounts.path("diseases").asInt());
+        assertThat(seedTargets.path("documents").asInt()).isEqualTo(seedCounts.path("documents").asInt());
+        assertThat(seedTargets.path("medicalCases").asInt()).isEqualTo(seedCounts.path("medicalCases").asInt());
+        assertThat(seedTargets.path("datasets").asInt()).isZero();
 
         mockMvc.perform(post("/api/admin/data-seeds/import").header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
@@ -715,6 +1136,42 @@ class MedRiskApplicationTests {
         login(username, "newpass123");
     }
 
+    private Map<String, Object> largeMetrics(int points) {
+        List<Map<String, Object>> rocCurve = new java.util.ArrayList<>();
+        List<Map<String, Object>> prCurve = new java.util.ArrayList<>();
+        for (int index = 0; index < points; index++) {
+            double value = index / (double) (points - 1);
+            rocCurve.add(Map.of("fpr", value, "tpr", 1.0 - value, "threshold", 1.0 - value));
+            prCurve.add(Map.of("recall", value, "precision", 1.0 - value, "threshold", 1.0 - value));
+        }
+        return Map.of(
+                "accuracy", 0.91,
+                "precision", 0.82,
+                "recall", 0.78,
+                "f1", 0.8,
+                "rocCurve", rocCurve,
+                "prCurve", prCurve,
+                "confusionMatrix", List.of(List.of(10, 2), List.of(3, 8)));
+    }
+
+    private JsonNode findByText(JsonNode array, String field, String value) {
+        for (JsonNode item : array) {
+            if (value.equals(item.path(field).asText())) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private JsonNode findById(JsonNode array, long id) {
+        for (JsonNode item : array) {
+            if (item.path("id").asLong() == id) {
+                return item;
+            }
+        }
+        return null;
+    }
+
     private String sampleCsv() {
         return """
                 age,bmi,glucose,bloodPressure,cholesterol,smoker,chestPain,maxHeartRate,label
@@ -733,6 +1190,16 @@ class MedRiskApplicationTests {
                 """;
     }
 
+    private byte[] zipBytes(String entryName, String content) throws java.io.IOException {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(bytes, java.nio.charset.StandardCharsets.UTF_8)) {
+            zip.putNextEntry(new java.util.zip.ZipEntry(entryName));
+            zip.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        return bytes.toByteArray();
+    }
+
     private String login(String username, String password) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -742,6 +1209,21 @@ class MedRiskApplicationTests {
                 .andReturn();
         JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
         return root.path("data").path("token").asText();
+    }
+
+    private ModelFeedbackEntity feedbackFor(Long modelVersionId, Long evaluationId, LocalDateTime now) {
+        ModelFeedbackEntity feedback = new ModelFeedbackEntity();
+        feedback.setModelVersionId(modelVersionId);
+        feedback.setEvaluationId(evaluationId);
+        feedback.setUserId(1L);
+        feedback.setProblemType("测试反馈");
+        feedback.setPriority("中");
+        feedback.setStatus("待处理");
+        feedback.setContent("用于验证模型版本删除时同步清理反馈。");
+        feedback.setMetricsSnapshotJson("{}");
+        feedback.setCreatedAt(now);
+        feedback.setUpdatedAt(now);
+        return feedback;
     }
 
     private boolean hasLoginIp(JsonNode logs, String resourceId, String clientIp) {

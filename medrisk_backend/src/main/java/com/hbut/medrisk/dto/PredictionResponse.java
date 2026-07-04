@@ -7,6 +7,7 @@ public record PredictionResponse(
         Long recordId,
         String diseaseType,
         String diseaseName,
+        String patientName,
         String riskLabel,
         double riskProbability,
         double confidence,

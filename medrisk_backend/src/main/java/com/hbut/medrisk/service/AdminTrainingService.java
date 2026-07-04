@@ -29,14 +29,17 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,7 +52,19 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class AdminTrainingService {
     private static final List<String> TERMINAL_STATUS = List.of("训练成功", "训练失败", "训练终止", "评估完成");
-    private static final List<String> MODEL_TYPES = List.of("xgboost", "tabpfn", "tabicl");
+    private static final List<String> MODEL_TYPES = List.of(
+            "xgboost",
+            "logistic_regression",
+            "random_forest",
+            "extra_trees",
+            "hist_gradient_boosting",
+            "lightgbm",
+            "catboost",
+            "tabpfn",
+            "tabicl",
+            "ft_transformer");
+    private static final int SMALL_DATASET_THRESHOLD = 1000;
+    private static final int MAX_METRIC_CURVE_POINTS = 400;
 
     private final TrainingDatasetRepository datasets;
     private final ModelTrainingJobRepository jobs;
@@ -112,6 +127,9 @@ public class AdminTrainingService {
                 if (!(entry.getValue() instanceof Map<?, ?> rawInfo)) continue;
                 Map<String, Object> info = new LinkedHashMap<>();
                 rawInfo.forEach((key, value) -> info.put(String.valueOf(key), value));
+                if (isSmallPublicManifestDataset(info)) {
+                    continue;
+                }
                 String diseaseType = string(info.get("diseaseType"), String.valueOf(entry.getKey()));
                 imported.add(toDatasetResponse(upsertPublicDataset(user, diseaseType, info, "train")));
                 if (info.containsKey("evaluationFile")) {
@@ -213,7 +231,10 @@ public class AdminTrainingService {
         Path target = dir.resolve(safeFileName(original)).normalize();
         ensureInside(uploadRoot, target);
         file.transferTo(target);
-        dataset.setFilePath(target.toString());
+        StoredDatasetFile storedFile = materializeDatasetFile(target, dir, original, ext);
+        dataset.setFileName(storedFile.fileName());
+        dataset.setFilePath(storedFile.path().toString());
+        dataset.setFileType(storedFile.fileType());
         applyValidation(dataset);
         dataset.setUpdatedAt(LocalDateTime.now());
         datasets.save(dataset);
@@ -245,17 +266,55 @@ public class AdminTrainingService {
     }
 
     @Transactional
-    public void deleteDataset(Long id) {
+    public Map<String, Object> deleteDataset(Long id, UserEntity user) {
         TrainingDatasetEntity dataset = requireDataset(id);
-        if (jobs.existsByDatasetId(id) || evaluations.existsByDatasetId(id)) {
-            throw new IllegalArgumentException("数据集已被训练任务或评估记录引用，不能直接删除");
+        DeleteDatasetResult result = deleteDatasetRow(dataset);
+        auditService.log(user.getId(), "DELETE_DATASET", "TRAINING_DATASET", id.toString(), writeMap(Map.of(
+                "deletedTrainingJobs", result.deletedTrainingJobs(),
+                "deletedEvaluations", result.deletedEvaluations(),
+                "deletedFeedback", result.deletedFeedback())));
+        return Map.of(
+                "deleted", true,
+                "id", id,
+                "deletedTrainingJobs", result.deletedTrainingJobs(),
+                "deletedEvaluations", result.deletedEvaluations(),
+                "deletedFeedback", result.deletedFeedback());
+    }
+
+    @Transactional
+    public Map<String, Object> pruneSmallDatasets(UserEntity user) {
+        List<TrainingDatasetEntity> rows = datasets.findTop200ByOrderByCreatedAtDesc().stream()
+                .filter(this::isSmallRemovableDataset)
+                .toList();
+        int deletedJobs = 0;
+        int deletedEvaluations = 0;
+        int deletedFeedback = 0;
+        List<Long> deletedIds = new ArrayList<>();
+        for (TrainingDatasetEntity dataset : rows) {
+            DeleteDatasetResult result = deleteDatasetRow(dataset);
+            deletedIds.add(dataset.getId());
+            deletedJobs += result.deletedTrainingJobs();
+            deletedEvaluations += result.deletedEvaluations();
+            deletedFeedback += result.deletedFeedback();
         }
-        deleteQuietly(Path.of(dataset.getFilePath()).getParent());
-        datasets.delete(dataset);
+        auditService.log(user.getId(), "PRUNE_SMALL_DATASETS", "TRAINING_DATASET", "SMALL", writeMap(Map.of(
+                "deletedDatasets", deletedIds.size(),
+                "deletedTrainingJobs", deletedJobs,
+                "deletedEvaluations", deletedEvaluations,
+                "deletedFeedback", deletedFeedback,
+                "threshold", SMALL_DATASET_THRESHOLD)));
+        return Map.of(
+                "deleted", true,
+                "deletedDatasets", deletedIds.size(),
+                "deletedDatasetIds", deletedIds,
+                "deletedTrainingJobs", deletedJobs,
+                "deletedEvaluations", deletedEvaluations,
+                "deletedFeedback", deletedFeedback,
+                "threshold", SMALL_DATASET_THRESHOLD);
     }
 
     public List<TrainingJobResponse> listJobs() {
-        return jobs.findTop200ByOrderByCreatedAtDesc().stream().map(this::syncAndMapJob).toList();
+        return jobs.findTop200ByOrderByIdDesc().stream().map(this::syncAndMapJob).toList();
     }
 
     public List<Map<String, Object>> modelCapabilities() {
@@ -308,7 +367,8 @@ public class AdminTrainingService {
         job.setModelType(modelType);
         job.setTrainStatus("准备训练");
         job.setProgress(0);
-        job.setTrainEpoch(intValue(hyperparameters.get("nEstimators"), request.epochs() == null ? ("xgboost".equals(modelType) ? 80 : 1) : request.epochs()));
+        Object iterationValue = hyperparameters.containsKey("nEstimators") ? hyperparameters.get("nEstimators") : hyperparameters.get("maxIterations");
+        job.setTrainEpoch(intValue(iterationValue, request.epochs() == null ? ("xgboost".equals(modelType) ? 80 : 1) : request.epochs()));
         job.setLearningRate(doubleValue(hyperparameters.get("learningRate"), "xgboost".equals(modelType) ? (request.learningRate() == null ? 0.05 : request.learningRate()) : 0.0));
         job.setTestSize(doubleValue(hyperparameters.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
         job.setHyperparametersJson(writeMap(hyperparameters));
@@ -409,8 +469,46 @@ public class AdminTrainingService {
         return toModelVersionResponse(model);
     }
 
+    @Transactional
+    public Map<String, Object> deleteModelVersion(Long modelVersionId, UserEntity user) {
+        ModelVersionEntity model = modelVersions.findById(modelVersionId)
+                .orElseThrow(() -> new EntityNotFoundException("模型版本不存在"));
+        List<ModelEvaluationEntity> linkedEvaluations = evaluations.findByModelVersionId(model.getId());
+        List<Long> evaluationIds = linkedEvaluations.stream().map(ModelEvaluationEntity::getId).toList();
+        Set<ModelFeedbackEntity> linkedFeedback = new LinkedHashSet<>(feedbacks.findByModelVersionId(model.getId()));
+        if (!evaluationIds.isEmpty()) {
+            linkedFeedback.addAll(feedbacks.findByEvaluationIdIn(evaluationIds));
+        }
+        List<ModelTrainingJobEntity> linkedJobs = jobs.findByModelVersion(model.getVersion());
+
+        if (!linkedFeedback.isEmpty()) {
+            feedbacks.deleteAll(linkedFeedback);
+        }
+        if (!linkedEvaluations.isEmpty()) {
+            evaluations.deleteAll(linkedEvaluations);
+        }
+        for (ModelTrainingJobEntity job : linkedJobs) {
+            deleteQuietly(trainingRoot.resolve("job-" + job.getId()));
+        }
+        if (!linkedJobs.isEmpty()) {
+            jobs.deleteAll(linkedJobs);
+        }
+        modelVersions.delete(model);
+        auditService.log(user.getId(), "DELETE_MODEL_VERSION", "MODEL_VERSION", model.getId().toString(), writeMap(Map.of(
+                "version", model.getVersion(),
+                "deletedJobs", linkedJobs.size(),
+                "deletedEvaluations", linkedEvaluations.size(),
+                "deletedFeedback", linkedFeedback.size())));
+        return Map.of(
+                "deleted", true,
+                "id", model.getId(),
+                "deletedJobs", linkedJobs.size(),
+                "deletedEvaluations", linkedEvaluations.size(),
+                "deletedFeedback", linkedFeedback.size());
+    }
+
     public List<ModelEvaluationResponse> listEvaluations() {
-        return evaluations.findTop200ByOrderByCreatedAtDesc().stream().map(this::toEvaluationResponse).toList();
+        return evaluations.findTop200ByOrderByIdDesc().stream().map(this::toEvaluationResponse).toList();
     }
 
     @Transactional
@@ -418,16 +516,20 @@ public class AdminTrainingService {
         ModelVersionEntity model = modelVersions.findById(request.modelVersionId())
                 .orElseThrow(() -> new EntityNotFoundException("模型版本不存在"));
         TrainingDatasetEntity dataset = requireDataset(request.datasetId());
+        String modelPath = resolveModelPath(model);
+        if (blank(modelPath)) {
+            throw new IllegalStateException("模型版本缺少训练产物，请先刷新训练任务状态或重新训练");
+        }
         try {
             Map<String, Object> response = restTemplate.postForObject(
                     modelServiceUrl + "/evaluate/" + model.getVersion(),
-                    Map.of("datasetPath", dataset.getFilePath(), "modelPath", model.getModelPath()),
+                    Map.of("datasetPath", dataset.getFilePath(), "modelPath", modelPath),
                     Map.class);
             ModelEvaluationEntity evaluation = new ModelEvaluationEntity();
             evaluation.setModelVersionId(model.getId());
             evaluation.setDatasetId(dataset.getId());
             evaluation.setUserId(user.getId());
-            evaluation.setMetricsJson(objectMapper.writeValueAsString(response == null ? Map.of() : response.get("metrics")));
+            evaluation.setMetricsJson(writeCompactMetrics(response == null ? Map.of() : response.get("metrics")));
             evaluation.setPredictionsJson(objectMapper.writeValueAsString(response == null ? List.of() : response.get("predictions")));
             evaluation.setCreatedAt(LocalDateTime.now());
             evaluations.save(evaluation);
@@ -439,7 +541,7 @@ public class AdminTrainingService {
     }
 
     public List<ModelFeedbackResponse> listFeedback() {
-        return feedbacks.findTop200ByOrderByCreatedAtDesc().stream().map(this::toFeedbackResponse).toList();
+        return feedbacks.findTop200ByOrderByIdDesc().stream().map(this::toFeedbackResponse).toList();
     }
 
     @Transactional
@@ -480,6 +582,9 @@ public class AdminTrainingService {
                 // Keep persisted status if the model service is unavailable.
             }
         }
+        if ("训练成功".equals(job.getTrainStatus()) && job.getModelVersion() != null) {
+            promoteModelVersion(job);
+        }
         return toJobResponse(job);
     }
 
@@ -504,7 +609,7 @@ public class AdminTrainingService {
         Object metrics = response.get("metrics");
         if (metrics != null) {
             try {
-                job.setMetricsJson(objectMapper.writeValueAsString(metrics));
+                job.setMetricsJson(writeCompactMetrics(metrics));
             } catch (Exception ignored) {
                 job.setMetricsJson("{}");
             }
@@ -514,15 +619,15 @@ public class AdminTrainingService {
         }
     }
 
-    private void promoteModelVersion(ModelTrainingJobEntity job) {
-        modelVersions.findByVersion(job.getModelVersion()).orElseGet(() -> {
+    private ModelVersionEntity promoteModelVersion(ModelTrainingJobEntity job) {
+        ModelVersionEntity model = modelVersions.findByVersion(job.getModelVersion()).orElseGet(() -> {
             ModelVersionEntity version = new ModelVersionEntity();
             version.setDiseaseType(job.getDiseaseType());
             version.setDiseaseName(diseaseName(job.getDiseaseType()));
             version.setModelName(job.getModelName());
             version.setModelType(normalizeModelType(job.getModelType()));
             version.setVersion(job.getModelVersion());
-            version.setMetricsJson(job.getMetricsJson() == null ? "{}" : job.getMetricsJson());
+            version.setMetricsJson(job.getMetricsJson() == null ? "{}" : writeCompactMetrics(readMap(job.getMetricsJson())));
             version.setFeatureSchemaJson("[]");
             version.setHyperparametersJson(job.getHyperparametersJson());
             TrainingDatasetEntity evaluationDataset = job.getEvaluationDatasetId() == null ? null : datasets.findById(job.getEvaluationDatasetId()).orElse(null);
@@ -531,7 +636,7 @@ public class AdminTrainingService {
                 version.setEvaluationDatasetSource(evaluationDataset.getSourceName());
                 version.setEvaluationDatasetUrl(evaluationDataset.getSourceUrl());
             } else {
-                Map<String, Object> metrics = readMap(job.getMetricsJson());
+                Map<String, Object> metrics = readMetricsMap(job.getMetricsJson());
                 version.setEvaluationDatasetName(string(metrics.get("evaluationDataset"), null));
                 version.setEvaluationDatasetSource(string(metrics.get("datasetSource"), null));
                 version.setEvaluationDatasetUrl(string(metrics.get("datasetUrl"), null));
@@ -541,6 +646,66 @@ public class AdminTrainingService {
             version.setCreatedAt(LocalDateTime.now());
             return modelVersions.save(version);
         });
+        boolean changed = false;
+        if (blank(model.getModelPath()) && !blank(job.getModelPath())) {
+            model.setModelPath(job.getModelPath());
+            changed = true;
+        }
+        if (blank(model.getMetricsJson()) && !blank(job.getMetricsJson())) {
+            model.setMetricsJson(writeCompactMetrics(readMap(job.getMetricsJson())));
+            changed = true;
+        }
+        if (blank(model.getHyperparametersJson()) && !blank(job.getHyperparametersJson())) {
+            model.setHyperparametersJson(job.getHyperparametersJson());
+            changed = true;
+        }
+        if (changed) {
+            model = modelVersions.save(model);
+        }
+        activatePromotedModel(model);
+        return model;
+    }
+
+    private String resolveModelPath(ModelVersionEntity model) {
+        if (!blank(model.getModelPath())) {
+            return model.getModelPath();
+        }
+        for (ModelTrainingJobEntity job : jobs.findByModelVersion(model.getVersion())) {
+            if (!blank(job.getModelPath())) {
+                model.setModelPath(job.getModelPath());
+                modelVersions.save(model);
+                return job.getModelPath();
+            }
+            Path fallback = trainingRoot.resolve("job-" + job.getId()).resolve("model.joblib").normalize();
+            if (Files.exists(fallback)) {
+                String modelPath = fallback.toString();
+                job.setModelPath(modelPath);
+                model.setModelPath(modelPath);
+                jobs.save(job);
+                modelVersions.save(model);
+                return modelPath;
+            }
+        }
+        return null;
+    }
+
+    private void activatePromotedModel(ModelVersionEntity model) {
+        if (Boolean.TRUE.equals(model.getActive()) || model.getModelPath() == null || model.getModelPath().isBlank()) {
+            return;
+        }
+        try {
+            restTemplate.postForObject(modelServiceUrl + "/models/activate", Map.of(
+                    "diseaseType", model.getDiseaseType(),
+                    "version", model.getVersion(),
+                    "modelPath", model.getModelPath()), Map.class);
+        } catch (RestClientException ignored) {
+            return;
+        }
+        List<ModelVersionEntity> diseaseModels = modelVersions.findByDiseaseTypeOrderByCreatedAtDesc(model.getDiseaseType());
+        for (ModelVersionEntity item : diseaseModels) {
+            item.setActive(item.getId().equals(model.getId()));
+        }
+        modelVersions.saveAll(diseaseModels);
     }
 
     private void applyValidation(TrainingDatasetEntity dataset) {
@@ -558,11 +723,11 @@ public class AdminTrainingService {
 
     private DatasetValidation validateDatasetFile(Path path) throws IOException {
         try (BufferedReader reader = openDatasetReader(path)) {
-            String header = reader.readLine();
-            if (header == null || header.isBlank()) {
+            String header = nextNonBlankLine(reader);
+            if (header == null) {
                 throw new IllegalArgumentException("数据集为空");
             }
-            List<String> columns = List.of(header.split(",")).stream().map(String::trim).toList();
+            List<String> columns = parseCsvLine(stripBom(header)).stream().map(String::trim).toList();
             if (!columns.contains("label")) {
                 throw new IllegalArgumentException("数据集必须包含 label 列");
             }
@@ -571,7 +736,10 @@ public class AdminTrainingService {
                 throw new IllegalArgumentException("数据集至少需要一个特征列");
             }
             int count = 0;
-            while (reader.readLine() != null) count++;
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.isBlank()) count++;
+            }
             if (count < 8) {
                 throw new IllegalArgumentException("训练数据至少需要 8 条样本");
             }
@@ -592,6 +760,66 @@ public class AdminTrainingService {
             throw new IllegalArgumentException("zip 数据集中没有 CSV 文件");
         }
         return Files.newBufferedReader(path, StandardCharsets.UTF_8);
+    }
+
+    private StoredDatasetFile materializeDatasetFile(Path storedPath, Path dir, String original, String ext) throws IOException {
+        if (!"zip".equals(ext)) {
+            return new StoredDatasetFile(original, storedPath, ext);
+        }
+        try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(storedPath), StandardCharsets.UTF_8)) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory() || !entry.getName().toLowerCase(Locale.ROOT).endsWith(".csv")) {
+                    continue;
+                }
+                String csvName = fileNameOnly(entry.getName(), "dataset.csv");
+                Path extracted = dir.resolve("extracted-" + safeFileName(csvName)).normalize();
+                ensureInside(uploadRoot, extracted);
+                Files.copy(zip, extracted, StandardCopyOption.REPLACE_EXISTING);
+                return new StoredDatasetFile(csvName, extracted, "csv");
+            }
+        } catch (IOException ignored) {
+            return new StoredDatasetFile(original, storedPath, ext);
+        }
+        return new StoredDatasetFile(original, storedPath, ext);
+    }
+
+    private String nextNonBlankLine(BufferedReader reader) throws IOException {
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (!line.isBlank()) {
+                return line;
+            }
+        }
+        return null;
+    }
+
+    private String stripBom(String value) {
+        return value != null && !value.isEmpty() && value.charAt(0) == '\uFEFF' ? value.substring(1) : value;
+    }
+
+    private List<String> parseCsvLine(String line) {
+        List<String> values = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            if (ch == '"') {
+                if (quoted && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    current.append('"');
+                    i++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (ch == ',' && !quoted) {
+                values.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        values.add(current.toString());
+        return values;
     }
 
     private void applyFeedback(ModelFeedbackEntity feedback, ModelFeedbackRequest request) {
@@ -660,7 +888,7 @@ public class AdminTrainingService {
                 job.getModelPath(),
                 job.getHistoryPath(),
                 job.getMetadataPath(),
-                readMap(job.getMetricsJson()),
+                readMetricsMap(job.getMetricsJson()),
                 job.getMessage(),
                 job.getCreatedAt(),
                 job.getUpdatedAt());
@@ -675,7 +903,7 @@ public class AdminTrainingService {
                 model == null ? "" : model.getVersion(),
                 evaluation.getDatasetId(),
                 dataset == null ? "" : dataset.getName(),
-                readMap(evaluation.getMetricsJson()),
+                readMetricsMap(evaluation.getMetricsJson()),
                 readListOfMaps(evaluation.getPredictionsJson()),
                 evaluation.getCreatedAt());
     }
@@ -692,12 +920,13 @@ public class AdminTrainingService {
                 feedback.getPriority(),
                 feedback.getStatus(),
                 feedback.getContent(),
-                readMap(feedback.getMetricsSnapshotJson()),
+                readMetricsMap(feedback.getMetricsSnapshotJson()),
                 feedback.getCreatedAt(),
                 feedback.getUpdatedAt());
     }
 
     private ModelVersionResponse toModelVersionResponse(ModelVersionEntity model) {
+        Map<String, Object> metrics = readMetricsMap(model.getMetricsJson());
         return new ModelVersionResponse(
                 model.getId(),
                 model.getDiseaseType(),
@@ -705,11 +934,12 @@ public class AdminTrainingService {
                 model.getModelName(),
                 normalizeModelType(model.getModelType()),
                 model.getVersion(),
-                readMap(model.getMetricsJson()),
+                metrics,
                 readMap(model.getHyperparametersJson()),
-                firstNonBlank(model.getEvaluationDatasetName(), string(readMap(model.getMetricsJson()).get("evaluationDataset"), null)),
-                firstNonBlank(model.getEvaluationDatasetSource(), string(readMap(model.getMetricsJson()).get("datasetSource"), null)),
-                firstNonBlank(model.getEvaluationDatasetUrl(), string(readMap(model.getMetricsJson()).get("datasetUrl"), null)),
+                firstNonBlank(model.getEvaluationDatasetName(), string(metrics.get("evaluationDataset"), null)),
+                firstNonBlank(model.getEvaluationDatasetSource(), string(metrics.get("datasetSource"), null)),
+                firstNonBlank(model.getEvaluationDatasetUrl(), string(metrics.get("datasetUrl"), null)),
+                model.getModelPath(),
                 Boolean.TRUE.equals(model.getActive()),
                 model.getCreatedAt());
     }
@@ -720,6 +950,52 @@ public class AdminTrainingService {
         } catch (Exception ex) {
             return Map.of();
         }
+    }
+
+    private Map<String, Object> readMetricsMap(String json) {
+        return compactMetrics(readMap(json));
+    }
+
+    private String writeCompactMetrics(Object payload) {
+        if (payload == null) {
+            return "{}";
+        }
+        try {
+            if (payload instanceof String text) {
+                return writeMap(readMetricsMap(text));
+            }
+            Map<String, Object> metrics = objectMapper.convertValue(payload, new TypeReference<>() {});
+            return writeMap(compactMetrics(metrics));
+        } catch (Exception ex) {
+            return "{}";
+        }
+    }
+
+    private Map<String, Object> compactMetrics(Map<String, Object> metrics) {
+        if (metrics == null || metrics.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> compacted = new LinkedHashMap<>(metrics);
+        compactCurve(compacted, "rocCurve");
+        compactCurve(compacted, "prCurve");
+        return compacted;
+    }
+
+    private void compactCurve(Map<String, Object> metrics, String key) {
+        Object value = metrics.get(key);
+        if (!(value instanceof List<?> curve) || curve.size() <= MAX_METRIC_CURVE_POINTS) {
+            return;
+        }
+        List<Object> sampled = new ArrayList<>(MAX_METRIC_CURVE_POINTS);
+        int previousIndex = -1;
+        for (int i = 0; i < MAX_METRIC_CURVE_POINTS; i++) {
+            int index = (int) Math.round((double) i * (curve.size() - 1) / (MAX_METRIC_CURVE_POINTS - 1));
+            if (index != previousIndex) {
+                sampled.add(curve.get(index));
+                previousIndex = index;
+            }
+        }
+        metrics.put(key, sampled);
     }
 
     private String writeMap(Map<String, Object> payload) {
@@ -733,10 +1009,47 @@ public class AdminTrainingService {
     private Map<String, Object> normalizeHyperparameters(String modelType, TrainingJobRequest request) {
         Map<String, Object> input = request.hyperparameters() == null ? Map.of() : request.hyperparameters();
         Map<String, Object> output = new LinkedHashMap<>();
+        if ("logistic_regression".equals(modelType)) {
+            output.put("cValue", doubleValue(input.get("cValue"), 1.0));
+            output.put("maxIterations", intValue(input.get("maxIterations"), 300));
+            output.put("classWeight", string(input.get("classWeight"), "balanced"));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
+        if ("random_forest".equals(modelType) || "extra_trees".equals(modelType)) {
+            output.put("nEstimators", intValue(input.get("nEstimators"), request.epochs() == null ? 160 : request.epochs()));
+            output.put("maxDepth", intValue(input.get("maxDepth"), 6));
+            output.put("classWeight", string(input.get("classWeight"), "balanced"));
+            output.put("seed", intValue(input.get("seed"), 42));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
+        if ("hist_gradient_boosting".equals(modelType)) {
+            output.put("maxIterations", intValue(input.get("maxIterations"), request.epochs() == null ? 120 : request.epochs()));
+            output.put("maxDepth", intValue(input.get("maxDepth"), 4));
+            output.put("learningRate", doubleValue(input.get("learningRate"), request.learningRate() == null ? 0.05 : request.learningRate()));
+            output.put("regLambda", doubleValue(input.get("regLambda"), 0.0));
+            output.put("seed", intValue(input.get("seed"), 42));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
+        if ("lightgbm".equals(modelType) || "catboost".equals(modelType)) {
+            output.put("nEstimators", intValue(input.get("nEstimators"), request.epochs() == null ? 160 : request.epochs()));
+            output.put("maxDepth", intValue(input.get("maxDepth"), 6));
+            output.put("learningRate", doubleValue(input.get("learningRate"), request.learningRate() == null ? 0.05 : request.learningRate()));
+            output.put("subsample", doubleValue(input.get("subsample"), 0.9));
+            output.put("colsampleBytree", doubleValue(input.get("colsampleBytree"), 0.9));
+            output.put("regLambda", doubleValue(input.get("regLambda"), "catboost".equals(modelType) ? 3.0 : 1.0));
+            output.put("classWeight", string(input.get("classWeight"), "balanced"));
+            output.put("seed", intValue(input.get("seed"), 42));
+            output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
+            return output;
+        }
         if ("tabpfn".equals(modelType)) {
-            output.put("maxTrainSamples", intValue(input.get("maxTrainSamples"), 10000));
+            output.put("maxTrainSamples", intValue(input.get("maxTrainSamples"), 2048));
             output.put("device", string(input.get("device"), "auto"));
             output.put("ensembleSize", intValue(input.get("ensembleSize"), 8));
+            output.put("version", string(input.get("version"), "v2"));
             output.put("testSize", doubleValue(input.get("testSize"), request.testSize() == null ? 0.2 : request.testSize()));
             return output;
         }
@@ -785,10 +1098,14 @@ public class AdminTrainingService {
 
     private String metricsSnapshot(Long evaluationId, Long modelVersionId) {
         if (evaluationId != null) {
-            return evaluations.findById(evaluationId).map(ModelEvaluationEntity::getMetricsJson).orElse("{}");
+            return evaluations.findById(evaluationId)
+                    .map(row -> writeMap(readMetricsMap(row.getMetricsJson())))
+                    .orElse("{}");
         }
         if (modelVersionId != null) {
-            return modelVersions.findById(modelVersionId).map(ModelVersionEntity::getMetricsJson).orElse("{}");
+            return modelVersions.findById(modelVersionId)
+                    .map(row -> writeMap(readMetricsMap(row.getMetricsJson())))
+                    .orElse("{}");
         }
         return "{}";
     }
@@ -825,6 +1142,10 @@ public class AdminTrainingService {
         return value == null ? fallback : String.valueOf(value);
     }
 
+    private boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
     private Integer intValue(Object value, Integer fallback) {
         if (value instanceof Number number) return number.intValue();
         try {
@@ -850,6 +1171,65 @@ public class AdminTrainingService {
 
     private String firstNonBlank(String first, String second) {
         return first != null && !first.isBlank() ? first : second;
+    }
+
+    private DeleteDatasetResult deleteDatasetRow(TrainingDatasetEntity dataset) {
+        List<ModelEvaluationEntity> datasetEvaluations = evaluations.findByDatasetId(dataset.getId());
+        List<Long> evaluationIds = datasetEvaluations.stream().map(ModelEvaluationEntity::getId).toList();
+        List<ModelFeedbackEntity> linkedFeedback = evaluationIds.isEmpty() ? List.of() : feedbacks.findByEvaluationIdIn(evaluationIds);
+        if (!linkedFeedback.isEmpty()) {
+            feedbacks.deleteAll(linkedFeedback);
+        }
+        if (!datasetEvaluations.isEmpty()) {
+            evaluations.deleteAll(datasetEvaluations);
+        }
+        List<ModelTrainingJobEntity> linkedJobs = jobs.findByDatasetIdOrEvaluationDatasetId(dataset.getId(), dataset.getId());
+        if (!linkedJobs.isEmpty()) {
+            jobs.deleteAll(linkedJobs);
+        }
+        deleteDatasetFiles(dataset);
+        datasets.delete(dataset);
+        return new DeleteDatasetResult(linkedJobs.size(), datasetEvaluations.size(), linkedFeedback.size());
+    }
+
+    private boolean isSmallRemovableDataset(TrainingDatasetEntity dataset) {
+        int sampleCount = dataset.getSampleCount() == null ? 0 : dataset.getSampleCount();
+        if (sampleCount >= SMALL_DATASET_THRESHOLD) return false;
+        String sourceName = dataset.getSourceName() == null ? "" : dataset.getSourceName();
+        String sourceRecordId = dataset.getSourceRecordId() == null ? "" : dataset.getSourceRecordId();
+        return sourceRecordId.startsWith("medrisk-demo:dataset:")
+                || sourceName.contains("UCI Machine Learning Repository")
+                || sourceName.contains("MedRisk Demo Seed Pack");
+    }
+
+    private boolean isSmallPublicManifestDataset(Map<String, Object> info) {
+        int rows = intValue(info.get("rows"), intValue(info.get("rawRows"), 0));
+        if (rows <= 0 || rows >= SMALL_DATASET_THRESHOLD) {
+            return false;
+        }
+        String datasetId = string(info.get("datasetId"), "");
+        String sourceName = string(info.get("sourceName"), string(info.get("source"), ""));
+        return datasetId.endsWith("_uci") || sourceName.contains("UCI Machine Learning Repository");
+    }
+
+    private void deleteDatasetFiles(TrainingDatasetEntity dataset) {
+        String filePath = dataset.getFilePath();
+        if (filePath == null || filePath.isBlank()) return;
+        Path path = Path.of(filePath).toAbsolutePath().normalize();
+        Path uploadDatasetRoot = uploadRoot.resolve("datasets").toAbsolutePath().normalize();
+        Path publicRoot = publicDatasetRoot.toAbsolutePath().normalize();
+        if (path.startsWith(publicRoot)) {
+            return;
+        }
+        if (!path.startsWith(uploadDatasetRoot)) {
+            return;
+        }
+        Path parent = path.getParent();
+        if (parent != null && parent.startsWith(uploadDatasetRoot)) {
+            deleteQuietly(parent);
+        } else {
+            deleteQuietly(path);
+        }
     }
 
     private String diseaseName(String diseaseType) {
@@ -880,5 +1260,11 @@ public class AdminTrainingService {
     }
 
     private record DatasetValidation(int sampleCount, List<String> featureColumns) {
+    }
+
+    private record StoredDatasetFile(String fileName, Path path, String fileType) {
+    }
+
+    private record DeleteDatasetResult(int deletedTrainingJobs, int deletedEvaluations, int deletedFeedback) {
     }
 }

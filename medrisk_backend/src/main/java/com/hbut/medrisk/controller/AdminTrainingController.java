@@ -76,12 +76,18 @@ public class AdminTrainingController {
     }
 
     @DeleteMapping("/datasets/{id}")
-    ApiResponse<Map<String, Boolean>> deleteDataset(
+    ApiResponse<Map<String, Object>> deleteDataset(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable Long id) {
-        requireAdmin(authorization);
-        trainingService.deleteDataset(id);
-        return ApiResponse.ok(Map.of("deleted", true));
+        UserEntity user = requireAdmin(authorization);
+        return ApiResponse.ok(trainingService.deleteDataset(id, user));
+    }
+
+    @PostMapping("/datasets/prune-small")
+    ApiResponse<Map<String, Object>> pruneSmallDatasets(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        UserEntity user = requireAdmin(authorization);
+        return ApiResponse.ok(trainingService.pruneSmallDatasets(user));
     }
 
     @PostMapping("/datasets/{id}/validate")
@@ -153,6 +159,14 @@ public class AdminTrainingController {
             @PathVariable Long modelVersionId) {
         UserEntity user = requireAdmin(authorization);
         return ApiResponse.ok(trainingService.activateModel(modelVersionId, user));
+    }
+
+    @DeleteMapping("/models/{modelVersionId}")
+    ApiResponse<Map<String, Object>> deleteModel(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long modelVersionId) {
+        UserEntity user = requireAdmin(authorization);
+        return ApiResponse.ok(trainingService.deleteModelVersion(modelVersionId, user));
     }
 
     @GetMapping("/model-evaluations")

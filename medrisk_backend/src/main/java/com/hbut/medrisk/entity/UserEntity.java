@@ -47,6 +47,9 @@ public class UserEntity {
 
     private LocalDateTime lastLoginAt;
 
+    @Column(length = 64)
+    private String currentSessionId;
+
     public Long getId() {
         return id;
     }
@@ -141,5 +144,13 @@ public class UserEntity {
 
     public void setLastLoginAt(LocalDateTime lastLoginAt) {
         this.lastLoginAt = lastLoginAt;
+    }
+
+    public String getCurrentSessionId() {
+        return currentSessionId;
+    }
+
+    public void setCurrentSessionId(String currentSessionId) {
+        this.currentSessionId = currentSessionId;
     }
 }

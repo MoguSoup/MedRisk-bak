@@ -101,7 +101,7 @@ public class AuthController {
     ApiResponse<Void> logout(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             HttpServletRequest servletRequest) {
-        UserEntity user = authService.requireUser(authorization);
+        UserEntity user = authService.logout(authorization);
         auditService.log(user.getId(), "LOGOUT", "USER", user.getId().toString(), "{}", clientIpResolver.resolve(servletRequest));
         return ApiResponse.ok(null);
     }

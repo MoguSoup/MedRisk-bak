@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hbut.medrisk.dto.ModelPredictionResponse;
 import com.hbut.medrisk.dto.PredictionResponse;
 import com.hbut.medrisk.entity.PredictionRecordEntity;
+import com.hbut.medrisk.entity.ReportRecordEntity;
 import com.hbut.medrisk.entity.UserEntity;
 import com.hbut.medrisk.repository.PredictionRecordRepository;
+import com.hbut.medrisk.repository.ReportRecordRepository;
 import jakarta.persistence.EntityNotFoundException;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -17,16 +19,19 @@ import org.springframework.transaction.annotation.Transactional;
 public class PredictionService {
     private final ModelClient modelClient;
     private final PredictionRecordRepository predictions;
+    private final ReportRecordRepository reports;
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
 
     public PredictionService(
             ModelClient modelClient,
             PredictionRecordRepository predictions,
+            ReportRecordRepository reports,
             ObjectMapper objectMapper,
             AuditService auditService) {
         this.modelClient = modelClient;
         this.predictions = predictions;
+        this.reports = reports;
         this.objectMapper = objectMapper;
         this.auditService = auditService;
     }
@@ -78,6 +83,19 @@ public class PredictionService {
         return record;
     }
 
+    @Transactional
+    public Map<String, Object> delete(Long recordId, UserEntity user) {
+        PredictionRecordEntity record = requireAccessibleRecord(recordId, user);
+        List<ReportRecordEntity> linkedReports = reports.findByPredictionIdOrderByCreatedAtDesc(record.getId());
+        for (ReportRecordEntity report : linkedReports) {
+            reports.delete(report);
+            auditService.log(user.getId(), "DELETE_REPORT", "REPORT", report.getId().toString(), "{\"source\":\"prediction-delete\"}");
+        }
+        predictions.delete(record);
+        auditService.log(user.getId(), "DELETE_PREDICTION", "PREDICTION", recordId.toString(), "{\"deletedReports\":" + linkedReports.size() + "}");
+        return Map.of("deleted", true, "id", recordId, "deletedReports", linkedReports.size());
+    }
+
     private PredictionResponse toResponse(PredictionRecordEntity record) {
         try {
             ModelPredictionResponse model = objectMapper.readValue(record.getResultJson(), ModelPredictionResponse.class);
@@ -87,6 +105,7 @@ public class PredictionService {
                     record.getId(),
                     record.getDiseaseType(),
                     record.getDiseaseName(),
+                    record.getPatientName(),
                     record.getRiskLabel(),
                     record.getRiskProbability(),
                     record.getConfidence(),
@@ -103,6 +122,7 @@ public class PredictionService {
                 record.getId(),
                 model.diseaseType(),
                 model.diseaseName(),
+                record.getPatientName(),
                 model.riskLabel(),
                 model.riskProbability(),
                 model.confidence(),

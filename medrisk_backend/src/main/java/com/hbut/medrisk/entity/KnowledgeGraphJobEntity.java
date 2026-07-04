@@ -27,6 +27,12 @@ public class KnowledgeGraphJobEntity {
     private Integer nodesCreated;
     @Column(nullable = false)
     private Integer relationshipsCreated;
+    @Column(nullable = false)
+    private Integer processedDocuments = 0;
+    @Column(nullable = false)
+    private Integer totalDocuments = 0;
+    @Column(nullable = false)
+    private Integer failedDocuments = 0;
     private Long documentId;
     @Column(nullable = false)
     private Long startedBy;
@@ -49,6 +55,12 @@ public class KnowledgeGraphJobEntity {
     public void setNodesCreated(Integer nodesCreated) { this.nodesCreated = nodesCreated; }
     public Integer getRelationshipsCreated() { return relationshipsCreated; }
     public void setRelationshipsCreated(Integer relationshipsCreated) { this.relationshipsCreated = relationshipsCreated; }
+    public Integer getProcessedDocuments() { return processedDocuments; }
+    public void setProcessedDocuments(Integer processedDocuments) { this.processedDocuments = processedDocuments; }
+    public Integer getTotalDocuments() { return totalDocuments; }
+    public void setTotalDocuments(Integer totalDocuments) { this.totalDocuments = totalDocuments; }
+    public Integer getFailedDocuments() { return failedDocuments; }
+    public void setFailedDocuments(Integer failedDocuments) { this.failedDocuments = failedDocuments; }
     public Long getDocumentId() { return documentId; }
     public void setDocumentId(Long documentId) { this.documentId = documentId; }
     public Long getStartedBy() { return startedBy; }

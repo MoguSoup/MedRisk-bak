@@ -59,13 +59,13 @@ public class LlmProfileService {
     @Transactional
     public List<LlmProfileResponse> publicProfiles() {
         ensureEnvProfile();
-        return profiles.findByEnabledTrueOrderByDefaultProfileDescUpdatedAtDesc().stream().map(this::toResponse).toList();
+        return profiles.findByEnabledTrueAndDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc().stream().map(this::toResponse).toList();
     }
 
     @Transactional
     public List<LlmProfileResponse> adminProfiles() {
         ensureEnvProfile();
-        return profiles.findAllByOrderByDefaultProfileDescUpdatedAtDesc().stream().map(this::toResponse).toList();
+        return profiles.findByDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc().stream().map(this::toResponse).toList();
     }
 
     @Transactional
@@ -85,6 +85,9 @@ public class LlmProfileService {
     public LlmProfileResponse update(Long id, LlmProfileRequest request, UserEntity user) {
         ensureEnvProfile();
         LlmModelProfileEntity row = profiles.findById(id).orElseThrow(() -> new EntityNotFoundException("大模型配置不存在"));
+        if (row.getDeletedAt() != null) {
+            throw new EntityNotFoundException("大模型配置不存在");
+        }
         apply(row, request, false);
         profiles.save(row);
         if (Boolean.TRUE.equals(row.getDefaultProfile())) {
@@ -95,24 +98,36 @@ public class LlmProfileService {
     }
 
     @Transactional
-    public void disable(Long id, UserEntity user) {
+    public void delete(Long id, UserEntity user) {
         ensureEnvProfile();
         LlmModelProfileEntity row = profiles.findById(id).orElseThrow(() -> new EntityNotFoundException("大模型配置不存在"));
+        if (row.getDeletedAt() != null) {
+            return;
+        }
+        boolean wasDefault = Boolean.TRUE.equals(row.getDefaultProfile());
         row.setEnabled(false);
         row.setDefaultProfile(false);
+        row.setDeletedAt(LocalDateTime.now());
+        row.setDeletedBy(user.getId());
         row.setUpdatedAt(LocalDateTime.now());
         profiles.save(row);
-        auditService.log(user.getId(), "DISABLE_LLM_PROFILE", "LLM_PROFILE", row.getId().toString(), "{}");
+        if (wasDefault) {
+            promoteFallbackDefault();
+        }
+        auditService.log(user.getId(), "DELETE_LLM_PROFILE", "LLM_PROFILE", row.getId().toString(), "{}");
     }
 
     @Transactional
     public RuntimeProfile resolve(Long id) {
         ensureEnvProfile();
         LlmModelProfileEntity row = id == null
-                ? profiles.findFirstByDefaultProfileTrueAndEnabledTrueOrderByUpdatedAtDesc()
-                        .orElseGet(() -> profiles.findByEnabledTrueOrderByDefaultProfileDescUpdatedAtDesc().stream().findFirst().orElse(null))
-                : profiles.findById(id).filter(item -> Boolean.TRUE.equals(item.getEnabled())).orElse(null);
+                ? profiles.findFirstByDefaultProfileTrueAndEnabledTrueAndDeletedAtIsNullOrderByUpdatedAtDesc()
+                        .orElseGet(() -> profiles.findByEnabledTrueAndDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc().stream().findFirst().orElse(null))
+                : profiles.findById(id).filter(item -> Boolean.TRUE.equals(item.getEnabled()) && item.getDeletedAt() == null).orElse(null);
         if (row == null) {
+            if (profiles.existsByModelNameAndBaseUrlAndDeletedAtIsNotNull(envModel, envBaseUrl)) {
+                return new RuntimeProfile(null, envModel, providerName(envBaseUrl), envBaseUrl, envModel, "", false, "none");
+            }
             return new RuntimeProfile(null, envModel, providerName(envBaseUrl), envBaseUrl, envModel, envApiKey, false, "none");
         }
         return new RuntimeProfile(
@@ -152,13 +167,25 @@ public class LlmProfileService {
     }
 
     private void clearOtherDefaults(Long keepId) {
-        for (LlmModelProfileEntity item : profiles.findAll()) {
+        for (LlmModelProfileEntity item : profiles.findByDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc()) {
             if (!item.getId().equals(keepId) && Boolean.TRUE.equals(item.getDefaultProfile())) {
                 item.setDefaultProfile(false);
                 item.setUpdatedAt(LocalDateTime.now());
                 profiles.save(item);
             }
         }
+    }
+
+    private void promoteFallbackDefault() {
+        List<LlmModelProfileEntity> candidates = profiles.findByEnabledTrueAndDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc();
+        if (candidates.isEmpty()) {
+            return;
+        }
+        LlmModelProfileEntity next = candidates.get(0);
+        next.setDefaultProfile(true);
+        next.setUpdatedAt(LocalDateTime.now());
+        profiles.save(next);
+        clearOtherDefaults(next.getId());
     }
 
     private void ensureEnvProfile() {
@@ -174,7 +201,7 @@ public class LlmProfileService {
         row.setReasoningSupported(true);
         row.setReasoningProtocol(normalizeReasoningProtocol(null, row.getProvider(), envBaseUrl));
         row.setEnabled(true);
-        row.setDefaultProfile(profiles.findByEnabledTrueOrderByDefaultProfileDescUpdatedAtDesc().isEmpty());
+        row.setDefaultProfile(profiles.findByEnabledTrueAndDeletedAtIsNullOrderByDefaultProfileDescUpdatedAtDesc().isEmpty());
         LocalDateTime now = LocalDateTime.now();
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
